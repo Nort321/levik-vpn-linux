@@ -1,0 +1,14 @@
+node_modules/
+dist/
+release/
+vendor/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+__pycache__/
+*.pyc
