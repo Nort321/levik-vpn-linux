@@ -29,6 +29,10 @@ def run(args, data=None, check=True):
                           timeout=15, check=check, env=SAFE_ENV)
 
 
+def interface_exists():
+    return run(["ip", "link", "show", "dev", TUN], check=False).returncode == 0
+
+
 def nft_exists(table):
     return run(["nft", "list", "table", "inet", table], check=False).returncode == 0
 
@@ -158,7 +162,7 @@ class Network:
         if self.dns_backend == "resolved":
             # A dead TUN automatically removes its per-link resolved settings.
             result = run(["resolvectl", "revert", TUN], check=False)
-            if result.returncode and Path(f"/sys/class/net/{TUN}").exists():
+            if result.returncode and interface_exists():
                 raise ValueError("Unable to restore DNS settings")
         if self.dns_backend == "resolvconf":
             run(["resolvconf", "-d", TUN])
@@ -204,7 +208,7 @@ class Network:
             for _ in range(60):
                 if self.core.poll() is not None:
                     raise ValueError("VPN core exited during startup")
-                if Path(f"/sys/class/net/{TUN}").exists():
+                if interface_exists():
                     self.configure_dns(address)
                     return
                 time.sleep(0.1)

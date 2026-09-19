@@ -95,7 +95,7 @@ function renderContent(preserveScroll: boolean): void {
           ${navButton("stats", "Статистика", "stats")}
           ${navButton("profile", "Профиль", "profile")}
         </nav>
-        <div class="sidebar-status">
+        <div class="sidebar-status" role="status" aria-live="polite">
           <div class="status-line"><span class="status-dot ${escapeHtml(state.status)}"></span><span>${statusTitle(state.status)}</span></div>
           <div class="status-subtitle">${escapeHtml(state.statusDetail ?? "VPN готов к подключению")}</div>
         </div>
