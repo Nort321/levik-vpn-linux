@@ -133,6 +133,11 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.state.sessionAvailable = this.accessToken !== null;
     this.state.settings = await this.loadSettings();
     const recoveredKillSwitch = await this.killSwitch.recover();
+    const recoveredDns = await this.dnsLeakProtection.recover();
+    if (recoveredDns && !this.state.settings.preventDnsLeaks) await this.dnsLeakProtection.disable();
+    else if (recoveredDns && !recoveredKillSwitch) {
+      this.patch({ status: "error", statusDetail: "DNS-защита сохранена после сбоя. Подключите VPN или нажмите Отключить, чтобы снять блокировку." });
+    }
     if (recoveredKillSwitch && !this.state.settings.killSwitch) {
       await this.killSwitch.disable();
     } else if (recoveredKillSwitch) {

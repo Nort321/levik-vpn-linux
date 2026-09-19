@@ -33,7 +33,10 @@ const keyboard = new KeyboardNavigation(root, () => {
 });
 let eventBindings = new AbortController();
 function listen<K extends keyof HTMLElementEventMap>(element: HTMLElement | null, type: K, handler: (event: HTMLElementEventMap[K]) => void): void {
-  element?.addEventListener(type, handler, { signal: eventBindings.signal });
+  element?.addEventListener(type, (event) => {
+    if (element.getAttribute("aria-disabled") === "true") { event.preventDefault(); return; }
+    handler(event);
+  }, { signal: eventBindings.signal });
 }
 
 void window.levik.snapshot().then((snapshot) => {
@@ -164,7 +167,7 @@ function renderHome(): string {
   if (!state) return "";
   const connected = state.status === "connected";
   const transitional = ["connecting", "disconnecting", "reconnecting"].includes(state.status);
-  const disconnectAction = ["connected", "connecting", "reconnecting"].includes(state.status) || (state.status === "error" && state.settings.killSwitch);
+  const disconnectAction = ["connected", "connecting", "reconnecting"].includes(state.status) || (state.status === "error" && (state.settings.killSwitch || state.settings.preventDnsLeaks));
   const server = selectedServer();
   return `
     <header class="page-header"><div><h1>Главная</h1><div class="subtitle">Защищённый доступ к интернету</div></div></header>
@@ -175,7 +178,7 @@ function renderHome(): string {
         <button class="power-button ${connected ? "connected" : ""} ${transitional ? "transitioning" : ""}" id="power-button" aria-label="${disconnectAction ? "Отключить VPN" : transitional ? statusTitle(state.status) : "Подключить VPN"}" aria-busy="${transitional}" ${state.status === "disconnecting" || (state.busy && !disconnectAction) ? "disabled" : ""}>${icon("power")}</button>
         <label class="home-server-picker">
           <span class="home-server-flag" aria-hidden="true">${countryFlagSvg(server?.countryCode ?? null)}</span>
-          <select id="home-server-select" aria-label="Сервер быстрого подключения" ${state.servers.length && !state.busy ? "" : "disabled"}>
+          <select id="home-server-select" aria-label="Сервер быстрого подключения" ${state.servers.length ? "" : "disabled"}>
             ${state.servers.length ? state.servers.map((item) => `<option value="${escapeAttribute(item.id)}" ${item.id === state?.selectedServerId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("") : `<option>Сервер не выбран</option>`}
           </select>
         </label>
@@ -230,7 +233,7 @@ function renderProfile(): string {
     <header class="page-header"><div><h1>Профиль и настройки</h1><div class="subtitle">Levik Account и параметры Linux-клиента</div></div><div class="toolbar"><button class="button" id="manage-subscription-button">${icon("renew")} Управление подпиской</button><button class="button" id="support-button">${icon("support")} Поддержка</button><button class="button danger" id="logout-button">${icon("logout")} Выйти</button></div></header>
     <div class="profile-grid">
       ${accountSection}
-      <section class="section card"><h2 class="card-title">Авторизовать устройство</h2><div class="card-caption">Введите код, показанный на экране другого устройства.</div><form class="activation-form" id="activation-form"><label for="activation-code">Код активации</label><div class="activation-controls"><input id="activation-code" type="text" inputmode="text" autocomplete="one-time-code" maxlength="19" placeholder="XXXX-XXXX-XXXX-XXXX" value="${escapeAttribute(activationCodeInput)}" ${activationSubmitting ? "disabled" : ""} /><button class="button primary" id="activation-submit" type="submit" ${activationSubmitting ? "disabled" : ""}>${activationSubmitting ? `<span class="spinner"></span>` : icon("link")} Авторизовать</button></div></form></section>
+      <section class="section card"><h2 class="card-title">Авторизовать устройство</h2><div class="card-caption">Введите код, показанный на экране другого устройства.</div><form class="activation-form" id="activation-form"><label for="activation-code">Код активации</label><div class="activation-controls"><input id="activation-code" type="text" inputmode="text" autocomplete="one-time-code" maxlength="19" placeholder="XXXX-XXXX-XXXX-XXXX" value="${escapeAttribute(activationCodeInput)}" ${activationSubmitting ? "readonly" : ""} /><button class="button primary" id="activation-submit" type="submit" ${activationSubmitting ? "disabled" : ""}>${activationSubmitting ? `<span class="spinner"></span>` : icon("link")} Авторизовать</button></div></form></section>
       <section class="section card"><h2 class="card-title">Настройки</h2><div class="settings-list">
         ${selectSetting("Маршрутизация", "Как направлять системный трафик", "routing-mode", state.settings.routingMode, [["global","Весь трафик"],["bypassRu","Обход ресурсов РФ"],["blockedOnly","Только заблокированное"]])}
         ${switchSetting("Автовыбор сервера", "Выбирать сервер с минимальной задержкой", "automaticServer", state.settings.automaticServer)}
@@ -317,9 +320,11 @@ function bindCommonEvents(): void {
 }
 
 function bindPageEvents(): void {
-  listen(document.getElementById("power-button"), "click", () => run(() => state && (["connected", "connecting", "reconnecting"].includes(state.status) || (state.status === "error" && state.settings.killSwitch)) ? window.levik.disconnect() : window.levik.connect()));
+  listen(document.getElementById("power-button"), "click", () => run(() => state && (["connected", "connecting", "reconnecting"].includes(state.status) || (state.status === "error" && (state.settings.killSwitch || state.settings.preventDnsLeaks))) ? window.levik.disconnect() : window.levik.connect()));
   listen(document.getElementById("home-server-select"), "change", (event) => {
-    const serverId = (event.target as HTMLSelectElement).value;
+    const select = event.target as HTMLSelectElement;
+    if (state?.busy) { select.value = state.selectedServerId ?? ""; return; }
+    const serverId = select.value;
     if (serverId && serverId !== state?.selectedServerId) void run(() => window.levik.selectServer(serverId));
   });
   listen(document.getElementById("refresh-button"), "click", () => run(() => window.levik.refreshAccount()));

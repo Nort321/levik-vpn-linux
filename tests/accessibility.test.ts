@@ -11,6 +11,13 @@ describe("Live render focus preservation", () => {
     patchHtml(root, '<button data-setting="killSwitch">On</button>');
     expect(document.activeElement).toBe(button); expect(blurs).toBe(0); expect(button.textContent).toBe("On");
   });
+  it("keeps a pending action focusable while announcing its disabled state", () => {
+    patchHtml(root, '<button id="update">Update</button>');
+    const control = root.querySelector("button")!; control.focus();
+    patchHtml(root, '<button id="update" disabled>Downloading</button>');
+    expect(document.activeElement).toBe(control); expect(control.disabled).toBe(false);
+    expect(control.getAttribute("aria-disabled")).toBe("true");
+  });
   it("preserves search text, selection and identity across a new server snapshot", () => {
     patchHtml(root, '<input id="search" value=""><p>old</p>');
     const search = root.querySelector("input")!; search.focus(); search.value = "Berlin"; search.setSelectionRange(2, 4);

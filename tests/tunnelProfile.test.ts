@@ -48,6 +48,10 @@ describe("Linux tunnel profile", () => {
       autoSystemRoutingTable: ["0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"],
       autoOutboundsInterface: "auto",
     }));
+    expect(config.dns).toEqual(expect.objectContaining({
+      servers: expect.arrayContaining([expect.objectContaining({ address: "https+local://1.1.1.1/dns-query", domains: ["full:example.com"], skipFallback: true, finalQuery: true })]),
+    }));
+    expect((config.outbounds as Array<Record<string, unknown>>)[0]?.streamSettings).toEqual(expect.objectContaining({ sockopt: expect.objectContaining({ domainStrategy: "ForceIP" }) }));
     const routing = config.routing as { rules: Array<Record<string, unknown>> };
     expect(routing.rules).not.toContainEqual(expect.objectContaining({
       network: "tcp,udp",

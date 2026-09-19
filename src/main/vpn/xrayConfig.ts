@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import type { AppSettings, TunnelServer } from "../../shared/contracts";
 import type { PreparedTunnelProfile } from "./tunnelProfile";
 import { XRAY_STATS_ENDPOINT } from "./xrayStats";
@@ -32,7 +33,8 @@ export function buildXrayConfig(
   server: TunnelServer,
   settings: AppSettings,
 ): Record<string, unknown> {
-  const selectedOutbound = withAntiDpi(server, settings);
+  const selectedOutbound = withEndpointResolution(withAntiDpi(server, settings));
+  const bootstrapDomains = endpointDomains(server.outbound);
   const directDomains = [...profile.directDomains];
   const proxyDomains = [...profile.proxyDomains];
   if (settings.routingMode === "blockedOnly") proxyDomains.push(...BLOCKED_DOMAINS);
@@ -71,9 +73,10 @@ export function buildXrayConfig(
     api: { tag: "levik-api", listen: XRAY_STATS_ENDPOINT, services: ["StatsService"] },
     dns: {
       tag: "levik-dns",
-      servers: settings.useDoh
-        ? [{ address: "https://1.1.1.1/dns-query", skipFallback: false }, settings.dnsServer]
-        : [settings.dnsServer],
+      servers: [
+        ...(bootstrapDomains.length ? [{ address: "https+local://1.1.1.1/dns-query", domains: bootstrapDomains.map((domain) => `full:${domain}`), skipFallback: true, finalQuery: true }] : []),
+        ...(settings.useDoh ? [{ address: "https://1.1.1.1/dns-query", skipFallback: false }] : [settings.dnsServer]),
+      ],
       queryStrategy: "UseIP",
     },
     inbounds: [tunInbound(settings.dnsServer), {
@@ -83,9 +86,10 @@ export function buildXrayConfig(
     outbounds: [
       selectedOutbound,
       { tag: "direct", protocol: "freedom", settings: { domainStrategy: "UseIP" } },
-      ...(settings.antiDpiEnabled && selectedOutbound !== server.outbound ? [{
+      ...(settings.antiDpiEnabled && server.outbound.protocol !== "hysteria" ? [{
         tag: "levik-fragment",
         protocol: "freedom",
+        streamSettings: { sockopt: { domainStrategy: "ForceIP" } },
         settings: {
           domainStrategy: "AsIs",
           fragment: {
@@ -160,4 +164,19 @@ function tunInbound(dnsServer: string): Record<string, unknown> {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+// Resolve the outer VPN hostname with a narrowly scoped direct DoH bootstrap.
+// The system resolver is deliberately blocked while the kill switch is active.
+function endpointDomains(outbound: Record<string, unknown>): string[] {
+  const settings = isRecord(outbound.settings) ? outbound.settings : {};
+  const endpoints: unknown[] = [settings, ...(Array.isArray(settings.vnext) ? settings.vnext : []), ...(Array.isArray(settings.servers) ? settings.servers : [])];
+  return unique(endpoints.flatMap((endpoint) => isRecord(endpoint) && typeof endpoint.address === "string" && !isIP(endpoint.address) ? [endpoint.address] : []));
+}
+function withEndpointResolution(outbound: Record<string, unknown>): Record<string, unknown> {
+  const copy = structuredClone(outbound);
+  const stream = isRecord(copy.streamSettings) ? copy.streamSettings : {};
+  const sockopt = isRecord(stream.sockopt) ? stream.sockopt : {};
+  copy.streamSettings = { ...stream, sockopt: { ...sockopt, domainStrategy: "ForceIP" } };
+  return copy;
 }

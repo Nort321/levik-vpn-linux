@@ -24,6 +24,7 @@ helper.STATE.mkdir(parents=True, exist_ok=True)
 network = helper.Network(helper.install_core(ROOT / "vendor/xray/linux-x64"))
 config = {
     "log": {"loglevel": "none"},
+    "dns": {"tag": "levik-dns", "servers": [{"address": "https+local://1.1.1.1/dns-query", "domains": ["full:example.com"], "skipFallback": True, "finalQuery": True}, "https://1.1.1.1/dns-query"]},
     "api": {"tag": "levik-api", "listen": "127.0.0.1:47185", "services": ["StatsService"]},
     "inbounds": [
         {"tag": "levik-tun-in", "protocol": "tun", "settings": {

@@ -50,6 +50,12 @@ export function patchHtml(root: HTMLElement, html: string): void {
   const activeKey = active ? key(active) : null;
   const template = document.createElement("template");
   template.innerHTML = html;
+  // Pending actions remain focusable: native disabled buttons drop focus when
+  // a progress snapshot arrives. Event bindings enforce aria-disabled instead.
+  template.content.querySelectorAll("button[disabled]").forEach((button) => {
+    button.removeAttribute("disabled");
+    button.setAttribute("aria-disabled", "true");
+  });
   reconcile(root, template.content);
   if (active instanceof HTMLElement && active.isConnected && document.activeElement !== active) active.focus({ preventScroll: true });
   if (activeKey && active instanceof HTMLElement && !active.isConnected) {

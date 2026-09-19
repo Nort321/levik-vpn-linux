@@ -408,3 +408,5 @@ select option { color: var(--text); background-color: var(--select-bg); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+button[aria-disabled="true"] { opacity: .6; cursor: progress; }
