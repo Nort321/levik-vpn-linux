@@ -1,98 +1,152 @@
-# Levik VPN for Linux
+# Levik VPN для Linux
 
-Official Linux desktop client, adapted from the Levik VPN Windows client. Electron 44, strict TypeScript, esbuild, electron-updater and the official Xray-core **v26.7.28** Linux x64 binary. Licensed **AGPL-3.0-only**.
+<p align="center">
+  <img src="build/icon.png" alt="Логотип Levik VPN" width="160" height="160" />
+</p>
 
-## Install
+<p align="center">
+  Официальный GUI-клиент Levik VPN для операционных систем Linux (Ubuntu, Debian, Fedora, Arch и др.).<br />
+  Быстрый, безопасный, с полной поддержкой управления только с клавиатуры и открытым исходным кодом.
+</p>
 
-Download `LevikVPN-Linux-x64.AppImage` or `LevikVPN-Linux-x64.deb` and `SHA256SUMS.txt` from [GitHub Releases](https://github.com/Nort321/levik-vpn-linux/releases/latest). Verify the versioned file against the checksum list before installing:
+<p align="center">
+  <a href="https://github.com/Nort321/levik-vpn-linux/releases/latest/download/LevikVPN-Linux-x64.AppImage">Скачать AppImage</a> ·
+  <a href="https://github.com/Nort321/levik-vpn-linux/releases/latest/download/LevikVPN-Linux-x64.deb">Скачать .deb</a> ·
+  <a href="https://github.com/Nort321/levik-vpn-linux/releases/latest">Все релизы</a> ·
+  <a href="https://leviknet.com">Официальный сайт</a> ·
+  <a href="https://t.me/leviksupportbot">Поддержка</a>
+</p>
 
-```sh
-sha256sum --check SHA256SUMS.txt --ignore-missing
+<p align="center">
+  <a href="https://github.com/Nort321/levik-vpn-linux/actions/workflows/linux-release.yml">
+    <img src="https://github.com/Nort321/levik-vpn-linux/actions/workflows/linux-release.yml/badge.svg" alt="Linux build" />
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="Лицензия AGPL-3.0" />
+  </a>
+  <a href="https://github.com/Nort321/levik-vpn-linux/releases/latest">
+    <img src="https://img.shields.io/github/v/release/Nort321/levik-vpn-linux?color=green&label=release" alt="Последний релиз" />
+  </a>
+</p>
+
+## Возможности приложения
+
+- **Быстрое подключение**: включение и выключение VPN в один клик или нажатием клавиши <kbd>Space</kbd> / <kbd>Enter</kbd>.
+- **Полноценный системный TUN**: маршрутизация TCP, UDP и игрового трафика через виртуальный сетевой интерфейс `LevikVPN`.
+- **Продвинутая клавиатурная доступность**: приложение на 100% управляется без мыши — фокус не теряется при обновлениях данных, поддерживаются горячие клавиши и навигация стрелками.
+- **Умный выбор серверов**: автоматический выбор узла с наименьшим пингом, поиск по странам и городам, добавление в избранное.
+- **Атомарный Kill Switch**: защита от утечек на уровне ядра Linux через таблицы `nftables` (блокирует трафик мимо туннеля даже при аварийном завершении процессов).
+- **Защита от DNS-утечек**: интеграция с `systemd-resolved` (`resolvectl`) и `openresolv` / `resolvconf`.
+- **Раздельное туннелирование**: возможность исключать определенные Linux-процессы из VPN или направлять через VPN только выбранные программы.
+- **Поддержка современных протоколов**: VLESS (Reality), Hysteria 2, Trojan через официальное ядро Xray-core v26.7.28.
+- **Оформление и темы**: системная, тёмная, светлая и глубокая AMOLED-тема, а также цветовой индикатор в системном трее.
+- **OTA-обновления**: автоматическая проверка и установка обновлений напрямую из GitHub Releases.
+
+## Установка
+
+### Вариант 1. Установка .deb пакета (Debian / Ubuntu / Linux Mint)
+
+Скачайте `.deb` пакет со страницы [последнего релиза](https://github.com/Nort321/levik-vpn-linux/releases/latest):
+
+```bash
 sudo apt install ./LevikVPN-Linux-x64.deb
-# Or, for the portable build:
+```
+
+> [!NOTE]
+> Пакет автоматически настроит необходимые права доступа для песочницы Electron (`chrome-sandbox`), профиль AppArmor и сетевые разрешения для ядра Xray (`cap_net_admin,cap_net_bind_service+ep`).
+
+### Вариант 2. Портативный AppImage (любой дистрибутив Linux)
+
+1. Скачайте `LevikVPN-Linux-x64.AppImage` из [релизов](https://github.com/Nort321/levik-vpn-linux/releases/latest).
+2. Сделайте файл исполняемым и запустите:
+
+```bash
 chmod +x LevikVPN-Linux-x64.AppImage
 ./LevikVPN-Linux-x64.AppImage
 ```
 
-The repository starts private. Releases require repository access until the owner makes it public; anonymous downloads and the default OTA feed become available after that change. No GitHub token is included in the application.
+*(Для работы AppImage на некоторых дистрибутивах может потребоваться пакет `fuse2` или `libfuse2`).*
 
-Linux x64 is supported. The Debian package installs required dependencies. For AppImage, install Python 3.9 or later, `pkexec`, a desktop polkit authentication agent, `nftables`, `iproute2`, `util-linux` (`setpriv`), `passwd` (`useradd`), and **systemd-resolved, openresolv or resolvconf**. Desktop requirements include GTK 3, NSS, a working **GNOME Keyring or KWallet**, and the libraries required by Electron. Some distributions require FUSE 2 for AppImages, or support extracting an AppImage with `--appimage-extract`. A usable `/dev/net/tun` and Linux 5.3 or later with TUN/nftables and pidfd support are required. Containers must grant the corresponding kernel capabilities; they are not the primary desktop target.
+При первом подключении к VPN системный агент PolicyKit (`pkexec`) запросит пароль администратора один раз за сеанс для безопасной настройки виртуального сетевого интерфейса и правил маршрутизации. **Никогда не запускайте само приложение через `sudo`**.
 
-Launch Levik VPN as your ordinary desktop user. Sign in with Levik Account, select a subscription and server, then Connect. The desktop polkit agent requests administrator authorization for the network helper once per application session. Never run Electron with sudo or disable its sandbox.
+## Управление с клавиатуры
 
-## Keyboard and accessibility
+Клиент разработан с первоклассной поддержкой доступности и позволяет полноценно пользоваться всеми функциями только с клавиатуры:
 
-All buttons, server selection/favorites, settings switches, dropdowns, searches and modal actions use native keyboard controls. Tab and Shift+Tab traverse them; Enter/Space activates buttons and switches. Native selects retain their standard platform keyboard behavior.
-
-| Shortcut | Action |
+| Клавиши | Действие |
 | --- | --- |
-| Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4 | Home / Servers / Statistics / Profile |
-| `/` | Open server search; focus process search inside its dialog |
-| Up / Down / Home / End | Navigate server, process, device or navigation lists |
-| Enter / Space | Activate focused control; toggle connection on Home when focus is outside controls |
-| Escape | Close process/device dialog |
-| Tab / Shift+Tab in a dialog | Cycle inside the dialog |
+| <kbd>Tab</kbd> / <kbd>Shift</kbd> + <kbd>Tab</kbd> | Последовательный переход между всеми элементами интерфейса |
+| <kbd>Enter</kbd> / <kbd>Space</kbd> | Активация кнопки, переключение тумблера настроек или выбор сервера |
+| <kbd>Ctrl</kbd> + <kbd>1</kbd> .. <kbd>4</kbd> | Быстрое переключение вкладок: Главная, Серверы, Статистика, Профиль |
+| <kbd>/</kbd> | Быстрый переход в строку поиска серверов (или процессов в диалоге) |
+| <kbd>↑</kbd> / <kbd>↓</kbd>, <kbd>Home</kbd> / <kbd>End</kbd> | Навигация по спискам серверов, устройств и процессов |
+| <kbd>Escape</kbd> | Закрытие модального диалога (с возвратом фокуса на кнопку вызова) |
 
-Dialogs make the underlying page inert and return focus to their trigger when dismissed. All themes, including AMOLED, have a visible three-pixel focus ring. Keyed DOM updates preserve focused control identity, unfinished input, caret position and scroll during snapshots; changing data does not replace the whole application DOM. Reduced-motion preferences are respected.
+Фокус ввода имеет четкую визуальную подсветку (`:focus-visible`) во всех цветовых схемах и **не сбрасывается** при фоновом обновлении сетевой статистики или статуса туннеля.
 
-## Network architecture
+## Открытый исходный код
 
-* The sandboxed renderer uses a narrow context-isolated preload bridge. Account signing, secure storage, profile decryption and networking remain in the main process. Renderer snapshots expose protocol labels, not outbound credentials.
-* `ip -j route` chooses the lowest-metric active non-tunnel uplink, with IPv6 and `/proc/net/route` fallbacks. Xray owns a `LevikVPN` TUN with IPv4/IPv6 half-default routes, and binds its own outbounds to the physical uplink to prevent loops.
-* A Python helper is authorized through **pkexec** and communicates over private inherited stdin/stdout. There is no root Electron, shell interpolation, public command socket or passwordless polkit rule. The helper accepts fixed operations and checks listener/interface/DNS inputs.
-* The helper verifies pinned hashes and copies Xray/geodata to root-owned `/var/lib/levik-vpn/core`, including when launched from an AppImage mount. It starts Xray under the dedicated `levik-vpn-core` service account with `CAP_NET_ADMIN` and `CAP_NET_RAW`. Process-based split tunneling additionally needs `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH` for cross-user procfs discovery; these are granted only to the pinned core when process rules are configured. The GUI receives no capabilities. Debian post-install also sets network capabilities on the restricted packaged core; `setpriv` ambient capabilities provide the portable fallback.
-* The `inet levik_vpn` nftables table blocks IPv4 and IPv6 outside the tunnel, except loopback, the dedicated core UID, DHCP and link-local IPv6 neighbor discovery. Existing connections do not bypass it. Intentional split/domain direct routes are performed by Xray; the kill switch prevents traffic from escaping outside that managed path.
-* DNS protection installs a separate `inet levik_dns` guard for physical TCP/UDP ports 53 and 853, configures the TUN resolver using `resolvectl` (`~.`) or `resolvconf` (exclusive mode with openresolv; a prioritized `tun.*` record with Debian resolvconf), and prioritizes DNS routing through the selected VPN before process bypass rules. Xray's built-in DNS is also tagged for VPN routing. VPN endpoint hostnames alone use a direct encrypted DoH bootstrap at `https+local://1.1.1.1/dns-query`; `ForceIP` avoids falling back to the blocked system resolver. Bootstrap does not resolve general application domains. User-managed DoH applications use their selected application route; the guard does not claim to identify every HTTPS DNS service.
-* Linux process rules use exact executable basenames and preserve case. No Windows `.exe` requirement or game companion expansion is applied. Procfs process enumeration is restricted to the desktop user's processes. Distribution procfs restrictions can affect process detection.
+В данном репозитории находится исключительно Linux-клиент. Здесь нет серверного бэкенда, секретов, ключей подписи или персональных данных.
 
-## Failure handling and recovery
+Структура исходного кода:
 
-Xray failure triggers the inherited serialized reconnect/health workflow. Kill switch rules remain while the tunnel restarts. If the GUI or helper crashes, nftables retains protection. Xray receives SIGKILL if its helper dies, including abrupt SIGKILL/OOM termination; the parent-death signal is restored after dropping privileges. Before reinitializing, a replacement helper checks the saved core PID, start time, service UID and executable, and uses a pidfd to terminate a matching leftover process without signaling a reused PID. Reopen Levik VPN and reconnect, or explicitly Disconnect to remove protection. A normal disconnect restores per-link resolver settings and removes only Levik VPN's own tables. The helper never flushes the system firewall. Protection is session-scoped; it is not a firewall service installed to persist across reboot.
-
-If the desktop cannot start, an administrator can explicitly release retained protection:
-
-```sh
-sudo nft delete table inet levik_vpn  # only if present
-sudo nft delete table inet levik_dns # only if present
-sudo resolvectl revert LevikVPN      # if the TUN still exists
-sudo resolvconf -d tun.LevikVPN      # when using openresolv or resolvconf
-# Older versions used the record name LevikVPN instead of tun.LevikVPN.
+```text
+build/          скрипты сборки пакетов, иконки и правила deb
+docs/           архитектурная документация и отчеты о валидации
+native/         безопасный привилегированный хелпер сети и манифест Xray
+scripts/        скрипты компиляции, загрузки ядра и smoke-тестов
+src/main/       главный процесс Electron, управление VPN, nftables и DNS
+src/preload/    изолированный мост между Node.js и окном рендера
+src/renderer/   интерфейс, стили и модуль клавиатурной доступности
+src/shared/     общие TypeScript-контракты и модели данных
+tests/          модульные и интеграционные тесты (Vitest и Python)
 ```
 
-Uninstalling preserves the dedicated service account/core cache and any active crash-retained firewall to avoid silently weakening protection or reusing a firewall-exempt UID. Disconnect before uninstalling. Remove retained tables explicitly before an administrator removes the service account/cache. The app does not edit `/etc/resolv.conf` directly. Locked/unavailable keyrings and Electron's insecure `basic_text` backend are rejected instead of storing account credentials unencrypted.
+## Сборка из исходного кода
 
-## Development
+Для локальной сборки потребуются **Node.js 22+**, **npm** и **Python 3.9+**:
 
-Use Node.js 24, npm and Python 3. All work happens in this independent repository:
-
-```sh
+```bash
+# 1. Установка зависимостей
 npm ci
+
+# 2. Загрузка и верификация официального ядра Xray Linux x64
 npm run download:xray
+
+# 3. Проверка типов и линтинг
 npm run lint
+
+# 4. Сборка проекта (esbuild)
 npm run build
+
+# 5. Запуск тестов (Vitest и Python)
 npm test
+
+# 6. Запуск в режиме разработки
 npm start
-```
 
-`download:xray` verifies a pinned SHA-256 for the official `Xray-linux-64.zip`, then verifies each binary/geodata file against `native/xray-integrity.json`. No binary archives, profiles, credentials, build output or dependencies are tracked. Changes to the core version must update all hashes deliberately after verifying the official release. Keep corresponding Xray source and notices available for redistribution.
-
-`npm test` runs Vitest unit/DOM tests and Python helper tests with mocked OS boundaries. To exercise real Linux TUN creation and crash-retained IPv4/IPv6 firewall behavior **inside a disposable Linux CI/VM only**:
-
-```sh
-sudo unshare --net python3 scripts/linux-smoke.py
-```
-
-This test refuses the host network namespace, but creates the root-owned core cache and service account in the VM filesystem. It requires downloaded Xray assets and Linux dependencies.
-
-## Packaging, releases and updates
-
-```sh
-npm run download:xray
+# 7. Сборка готовых пакетов (.deb и .AppImage)
 npm run package:linux
 ```
 
-Build on Linux x64. electron-builder emits AppImage and `.deb` packages, a desktop entry under Network/VPN, icons and `latest-linux.yml`. `.github/workflows/linux-release.yml` runs on main pushes, pull requests and manual dispatch. It installs dependencies, assigns a unique version using the run number, verifies the core, runs lint/build/unit/native tests, packages and checksums artifacts. Main builds publish a tagged GitHub Release with versioned files, stable download aliases, updater metadata and `SHA256SUMS.txt`. PRs build but cannot publish.
+Собранные бинарные файлы появятся в каталоге `release/`.
 
-The generic updater points to `https://github.com/Nort321/levik-vpn-linux/releases/latest/download`. AppImage updates require a writable AppImage path. Debian updates may require package-manager authorization and can always be installed manually from the release. `LEVIK_UPDATE_URL` can select an operator-managed HTTPS mirror; no server credentials should be embedded. Reconnecting after an application update re-authorizes the helper.
+## Автоматические релизы
 
-See [architecture](docs/architecture.md), [security policy](SECURITY.md), [third-party notices](THIRD_PARTY_NOTICES.md) and [validation report](docs/implementation-report.md).
+Каждый пуш в ветку `main` запускает пайплайн GitHub Actions [`.github/workflows/linux-release.yml`](.github/workflows/linux-release.yml). Он выполняет:
+- Проверку типов, сборку и запуск тестов;
+- Тестирование реального TUN-интерфейса и правил firewall в изолированном сетевом пространстве Linux;
+- Формирование пакетов `.deb` и `.AppImage`;
+- Расчет контрольных сумм `SHA256SUMS.txt`;
+- Публикацию релиза в GitHub Releases с поддержкой автоматических OTA-обновлений.
+
+## Безопасность и конфиденциальность
+
+- Все сессионные данные и ключи хранятся в защищённом системном хранилище (GNOME Keyring / KWallet через Electron SafeStorage). Небезопасное хранение в открытом тексте блокируется.
+- Привилегированный хелпер не выполняет произвольных шелл-команд: взаимодействие происходит через бинарные списки аргументов по изолированному каналу `stdio`.
+- Подробные политики и контакты для сообщений об уязвимостях описаны в [SECURITY.md](SECURITY.md).
+
+## Лицензия
+
+Исходный код Levik VPN для Linux распространяется под лицензией [GNU AGPLv3](LICENSE).
+Уведомления о сторонних компонентах и их лицензиях доступны в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
