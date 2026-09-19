@@ -38,7 +38,9 @@ jobs:
       - run: npm run build
       - run: npm test
       - name: Test real Linux TUN and nftables in an isolated network namespace
-        run: sudo unshare --net python3 scripts/linux-smoke.py
+        run: |
+          sudo env PYTHONPATH=tests python3 -m unittest test_network_helper.LifetimeTests
+          sudo unshare --net python3 scripts/linux-smoke.py
       - run: npm run package:linux
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'

@@ -1,6 +1,8 @@
 #!/usr/bin/python3
 """Authenticated stdio helper. No shell, socket listener, or passwordless policy."""
+import ctypes
 import fcntl
+from functools import partial
 import hashlib
 import ipaddress
 import json
@@ -22,6 +24,63 @@ STATE = Path("/run/levik-vpn")
 CORE = Path("/var/lib/levik-vpn/core")
 ACCOUNT = "levik-vpn-core"
 SAFE_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C"}
+# setpriv restores PDEATHSIG after changing credentials. Check the parent again
+# after that transition to close the interval during which Linux clears it.
+CORE_EXEC = "import os,sys; os.getppid() == int(sys.argv[1]) or sys.exit(1); os.execv(sys.argv[2], sys.argv[2:])"
+
+
+def parent_death_signal(parent_pid):
+    # The helper is single-threaded, so a preexec_fn is safe here.
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+        raise OSError(ctypes.get_errno(), "Unable to bind VPN core lifetime")
+    if os.getppid() != parent_pid:
+        os._exit(1)
+
+
+def process_start_time(pid):
+    # comm can contain spaces and parentheses; field 22 follows its final ')'.
+    return (Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[19]
+
+
+def recover_core():
+    """Called under the helper lock, before replacing core files or networking."""
+    path = STATE / "core.json"
+    try:
+        saved = json.loads(path.read_text())
+    except FileNotFoundError:
+        return
+    if (not isinstance(saved, dict) or type(saved.get("pid")) is not int
+            or saved["pid"] <= 1 or not isinstance(saved.get("startTime"), str)
+            or type(saved.get("uid")) is not int):
+        raise ValueError("Invalid saved VPN core identity")
+    pid = saved["pid"]
+    try:
+        # Open before checking identity: signals must never hit a recycled PID.
+        descriptor = os.pidfd_open(pid)
+    except ProcessLookupError:
+        path.unlink()
+        return
+    try:
+        try:
+            proc = Path("/proc") / str(pid)
+            matches = (process_start_time(pid) == saved["startTime"]
+                       and proc.stat().st_uid == saved["uid"]
+                       and os.readlink(proc / "exe") in (str(CORE / "xray"), str(CORE / "xray") + " (deleted)"))
+        except (FileNotFoundError, ProcessLookupError):
+            matches = False
+        if matches:
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            with selectors.DefaultSelector() as selector:
+                selector.register(descriptor, selectors.EVENT_READ)
+                if not selector.select(5):
+                    raise ValueError("Unable to stop previous VPN core")
+    finally:
+        os.close(descriptor)
+    path.unlink()
 
 
 def run(args, data=None, check=True):
@@ -115,14 +174,16 @@ class Network:
         try:
             saved = json.loads((STATE / "state.json").read_text())
             self.dns_backend = saved.get("dnsBackend") if saved.get("dnsBackend") in ("resolved", "resolvconf") else None
+            self.dns_interface = saved.get("dnsInterface") if saved.get("dnsInterface") == "tun." + TUN else TUN
         except (FileNotFoundError, ValueError):
             self.dns_backend = None
+            self.dns_interface = TUN
         self.kill_enabled = nft_exists(TABLE)
         self.save_state()
 
     def save_state(self):
         temporary = STATE / "state.tmp"
-        temporary.write_text(json.dumps({"killSwitch": self.kill_enabled, "dnsProtection": self.dns_enabled, "dnsBackend": self.dns_backend}))
+        temporary.write_text(json.dumps({"killSwitch": self.kill_enabled, "dnsProtection": self.dns_enabled, "dnsBackend": self.dns_backend, "dnsInterface": self.dns_interface}))
         temporary.chmod(0o644)
         temporary.replace(STATE / "state.json")
 
@@ -153,10 +214,16 @@ class Network:
             run(["resolvectl", "flush-caches"])
         elif shutil.which("resolvconf"):
             self.dns_backend = "resolvconf"
+            # Debian resolvconf orders tun* ahead of physical links and does not
+            # implement openresolv's metric/exclusive flags. Both accept -a/-d.
+            self.dns_interface = "tun." + TUN
             self.save_state()
-            run(["resolvconf", "-a", TUN, "-m", "0", "-x"], f"nameserver {address}\n".encode())
+            data = f"nameserver {address}\n".encode()
+            result = run(["resolvconf", "-a", self.dns_interface, "-m", "0", "-x"], data, check=False)
+            if result.returncode:
+                run(["resolvconf", "-a", self.dns_interface], data)
         else:
-            raise ValueError("Install systemd-resolved or openresolv for DNS protection")
+            raise ValueError("Install systemd-resolved, openresolv or resolvconf for DNS protection")
 
     def revert_dns(self):
         if self.dns_backend == "resolved":
@@ -165,7 +232,7 @@ class Network:
             if result.returncode and interface_exists():
                 raise ValueError("Unable to restore DNS settings")
         if self.dns_backend == "resolvconf":
-            run(["resolvconf", "-d", TUN])
+            run(["resolvconf", "-d", self.dns_interface])
         self.dns_backend = None
         self.save_state()
 
@@ -181,6 +248,7 @@ class Network:
                     self.core.kill()
                     self.core.wait(timeout=5)
                 self.core = None
+                (STATE / "core.json").unlink(missing_ok=True)
 
     def start(self, config):
         address = validate_config(config)
@@ -191,18 +259,27 @@ class Network:
         process_rules = any(rule.get("process") for rule in config.get("routing", {}).get("rules", []))
         caps = "+net_admin,+net_raw" + (",+sys_ptrace,+dac_read_search" if process_rules else "")
         prefix = ["setpriv", f"--reuid={account.pw_uid}", f"--regid={account.pw_gid}",
-                  "--clear-groups", f"--inh-caps={caps}",
+                  "--clear-groups", "--pdeathsig=SIGKILL", f"--inh-caps={caps}",
                   f"--ambient-caps={caps}", f"--bounding-set=-all,{caps}",
+                  sys.executable, "-I", "-c", CORE_EXEC, str(os.getpid()),
                   str(CORE / "xray")]
         data = json.dumps(config).encode()
         env = {**SAFE_ENV, "XRAY_LOCATION_ASSET": str(CORE)}
         validation = subprocess.run(prefix + ["run", "-test", "-format", "json", "-config", "stdin:"],
-                                    input=data, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, timeout=15)
+                                    input=data, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, timeout=15,
+                                    preexec_fn=partial(parent_death_signal, os.getpid()))
         if validation.returncode:
             raise ValueError("VPN core rejected the profile")
         self.core = subprocess.Popen(prefix + ["run", "-format", "json", "-config", "stdin:"],
-                                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+                                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+                                     preexec_fn=partial(parent_death_signal, os.getpid()))
         try:
+            # Record before delivering the profile, so no active core can escape
+            # recovery even if the helper dies during startup.
+            temporary = STATE / "core.tmp"
+            temporary.write_text(json.dumps({"pid": self.core.pid, "startTime": process_start_time(self.core.pid), "uid": account.pw_uid}))
+            temporary.chmod(0o600)
+            temporary.replace(STATE / "core.json")
             self.core.stdin.write(data)
             self.core.stdin.close()
             for _ in range(60):
@@ -244,6 +321,7 @@ def main():
     STATE.mkdir(mode=0o755, exist_ok=True)
     lock = open(STATE / "lock", "w")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    recover_core()
     network = Network(install_core(Path(sys.argv[1])))
     def shutdown(_signum, _frame):
         raise SystemExit(0)

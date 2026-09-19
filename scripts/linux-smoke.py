@@ -3,6 +3,8 @@
 import importlib.util
 import os
 from pathlib import Path
+import selectors
+import signal
 import socket
 import subprocess
 import time
@@ -55,9 +57,48 @@ try:
     network.stop()
     assert helper.nft_exists(helper.TABLE)
     assert_blocked()
+    # Kill the owner rather than Xray: PDEATHSIG must survive setpriv's UID
+    # change and the core must leave a recoverable record, not a live tunnel.
+    reader, writer = os.pipe()
+    owner = os.fork()
+    if owner == 0:
+        os.close(reader)
+        try:
+            network.start(config)
+            os.write(writer, str(network.core.pid).encode())
+            os.close(writer)
+            signal.pause()
+        finally:
+            os._exit(0)
+    os.close(writer)
+    try:
+        with os.fdopen(reader) as stream:
+            core_pid = int(stream.read())
+        descriptor = os.pidfd_open(core_pid)
+        try:
+            os.kill(owner, signal.SIGKILL)
+            os.waitpid(owner, 0)
+            owner = None
+            with selectors.DefaultSelector() as selector:
+                selector.register(descriptor, selectors.EVENT_READ)
+                assert selector.select(5), "Xray survived abrupt helper death"
+        finally:
+            os.close(descriptor)
+    finally:
+        if owner is not None:
+            os.kill(owner, signal.SIGKILL)
+            os.waitpid(owner, 0)
+    assert not helper.interface_exists()
+    assert helper.nft_exists(helper.TABLE)
+    assert_blocked()
+    helper.recover_core()
+    assert not (helper.STATE / "core.json").exists()
+    network.start(config)
+    assert helper.interface_exists()
+    network.stop()
     network.firewall(False)
     assert not helper.nft_exists(helper.TABLE)
-    print("Linux integration passed: Xray TUN, stats, IPv4/IPv6 kill switch, crash retention, cleanup")
+    print("Linux integration passed: Xray TUN, stats, IPv4/IPv6 kill switch, abrupt helper death, recovery, cleanup")
 finally:
     network.stop()
     network.firewall(False)
