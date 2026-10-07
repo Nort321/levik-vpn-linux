@@ -122,7 +122,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     await this.killSwitch.cleanupLegacyConfig(app.getPath("userData"));
     this.identity = await this.loadIdentity();
     this.api = new MobileApiClient(
-      process.env.LEVIK_API_ORIGIN ?? "https://leviknet.com",
+      process.env.LEVIK_API_ORIGIN ?? "https://api.leviknet.org",
       new RequestSigner(this.identity),
       app.getVersion(),
     );
