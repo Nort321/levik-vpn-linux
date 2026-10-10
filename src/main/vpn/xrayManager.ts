@@ -8,6 +8,7 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
+  private outboundName: string | null = null;
   constructor() {
     super();
     networkHelper.on("exit", (code) => this.exited(code));
@@ -16,6 +17,7 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
   async start(config: Record<string, unknown>): Promise<void> {
     await this.stop();
     const interfaceName = await findLinuxOutboundInterface();
+    this.outboundName = interfaceName;
     await networkHelper.request("start", { config: bindXrayOutboundInterface(config, interfaceName) });
     this.running = true;
     this.timer = setInterval(() => void this.queryStats(), 2000);
@@ -29,6 +31,8 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     this.running = false;
   }
   isRunning(): boolean { return this.running; }
+  /** The physical interface the last tunnel was bound to. */
+  get outboundInterfaceName(): string | null { return this.outboundName; }
   async isHealthy(): Promise<boolean> {
     if (!this.running) return false;
     try { await networkHelper.request("stats"); return this.running; }
