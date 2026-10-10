@@ -29,6 +29,14 @@
   },
   "build": {
     "appId": "com.leviknet.vpn.linux",
+    "protocols": [
+      {
+        "name": "Levik VPN",
+        "schemes": [
+          "levik"
+        ]
+      }
+    ],
     "productName": "Levik VPN",
     "artifactName": "LevikVPN-Linux-${version}-${arch}.${ext}",
     "directories": {

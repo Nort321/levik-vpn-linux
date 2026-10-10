@@ -8,9 +8,10 @@ const snapshot: AppSnapshot = {
     traffic: { usedBytes: 0, limitBytes: 1000 }, devices: { used: 1, limit: 2, items: [{ id: "device", label: "Desktop" }] },
     shield: { supported: false, enabled: false }, actions: { renew: true, revokeDevice: true } }] },
   servers: [{ id: "de", tag: "de", name: "Berlin", countryCode: "DE", outbound: { protocol: "vless" } }, { id: "nl", tag: "nl", name: "Amsterdam", countryCode: "NL", outbound: { protocol: "vless" } }],
-  settings: { routingMode: "global", automaticServer: true, autoReconnect: true, killSwitch: true, useDoh: true, dnsServer: "1.1.1.1", theme: "dark", launchAtLogin: false, autoConnectOnLaunch: false, closeToTray: true, preventDnsLeaks: true, favoriteServerIds: [], antiDpiEnabled: false, antiDpiPackets: "tlshello", antiDpiLength: "100-200", antiDpiInterval: "10-20", splitTunnelMode: "bypass", splitTunnelProcesses: [], connectionTelemetry: true, telemetryNoticeShown: true },
+  settings: { routingMode: "global", automaticServer: true, autoReconnect: true, killSwitch: true, useDoh: true, dnsServer: "1.1.1.1", theme: "dark", launchAtLogin: false, autoConnectOnLaunch: false, closeToTray: true, preventDnsLeaks: true, favoriteServerIds: [], antiDpiEnabled: false, antiDpiPackets: "tlshello", antiDpiLength: "100-200", antiDpiInterval: "10-20", splitTunnelMode: "bypass", splitTunnelProcesses: [], connectionTelemetry: true, telemetryNoticeShown: true, syncSettings: true },
   sessionStartedAt: null, downloadBytes: 0, uploadBytes: 0, logs: [], busy: false,
   update: { status: "idle", version: null, progress: null, message: null },
+  announcements: [], settingsSyncedAt: null,
 };
 let emit: (value: AppSnapshot) => void = () => {};
 const noop = vi.fn(async () => {});
@@ -22,6 +23,7 @@ const bridge: LevikDesktopApi = {
   listProcesses: async () => [{ name: "firefox", path: "/usr/bin/firefox", running: true }, { name: "code", path: "/usr/bin/code", running: true }],
   selectExecutable: async () => null, pingServers: noop, revokeDevice: noop, setSubscriptionShield: noop,
   authorizeActivation: noop, checkForUpdates: noop, downloadUpdate: noop, installUpdate: noop, createSupportReport: async () => "https://note.leviknet.com/x#v1.key",
+  dismissAnnouncement: vi.fn(async () => {}), openCabinet: vi.fn(async () => {}), onNavigate: () => () => {},
 };
 function button(selector: string): HTMLButtonElement { const node = document.querySelector<HTMLButtonElement>(selector); if (!node) throw new Error(`Missing ${selector}`); return node; }
 function press(key: string, ctrlKey = false): void { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true })); }
@@ -63,5 +65,13 @@ describe("Rendered desktop integration", () => {
       const label = control.getAttribute("aria-label") || control.textContent?.trim() || (control.id && document.querySelector(`label[for="${control.id}"]`)?.textContent);
       expect(Boolean(label), `${control.tagName}#${control.id}`).toBe(true);
     }
+  });
+  it("shows announcements and opens the personal cabinet signed in", () => {
+    emit({ ...snapshot, announcements: [{ id: "0b8f5f0e-7d1c-4d6f-9b6a-1d8f0e2a3b4c", level: "critical", title: "Сбой", body: "Чиним", linkUrl: null, notify: false, startsAt: 0, endsAt: 1 }] });
+    expect(document.querySelector(".announcement.critical")?.getAttribute("role")).toBe("alert");
+    button('[data-dismiss-announcement]').click();
+    expect(bridge.dismissAnnouncement).toHaveBeenCalledWith("0b8f5f0e-7d1c-4d6f-9b6a-1d8f0e2a3b4c");
+    button("#cabinet-button").click();
+    expect(bridge.openCabinet).toHaveBeenCalledWith("/dashboard");
   });
 });
