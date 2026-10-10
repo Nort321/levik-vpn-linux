@@ -4,6 +4,8 @@ import { shouldShowLogin } from "../shared/sessionState";
 import { mergeProcessList, normalizeProcessSelection, processStatusLabel, resolveProcessCompanions, sortProcessList } from "../shared/processes";
 import QRCode from "qrcode";
 
+const SUPPORT_CHAT_URL = "https://t.me/leviksupportbot";
+
 let state: AppSnapshot | null = null;
 let activeTab: AppTab = "home";
 let loginWaiting = false;
@@ -21,6 +23,7 @@ let processSearchQuery = "";
 let serverSearchQuery = "";
 let favoritesOnly = false;
 let devicesSubscriptionId: string | null = null;
+let supportDialog: { creating: boolean; url: string | null } | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let activationCodeInput = "";
 let activationSubmitting = false;
@@ -30,6 +33,7 @@ const root = requiredElement("app");
 const keyboard = new KeyboardNavigation(root, () => {
   if (showProcessDialog) closeProcessDialog();
   else if (devicesSubscriptionId) closeDevicesDialog();
+  else if (supportDialog && !supportDialog.creating) closeSupportDialog();
 });
 let eventBindings = new AbortController();
 function listen<K extends keyof HTMLElementEventMap>(element: HTMLElement | null, type: K, handler: (event: HTMLElementEventMap[K]) => void): void {
@@ -106,7 +110,8 @@ function renderContent(preserveScroll: boolean): void {
       <main class="content"><div class="content-inner">${renderTelemetryNotice()}${renderPage()}</div></main>
     </div>
     ${showProcessDialog ? renderProcessDialog() : ""}
-    ${devicesSubscriptionId ? renderDevicesDialog(devicesSubscriptionId) : ""}`);
+    ${devicesSubscriptionId ? renderDevicesDialog(devicesSubscriptionId) : ""}
+    ${supportDialog ? renderSupportDialog(supportDialog) : ""}`);
   bindCommonEvents();
   bindPageEvents();
   applyProgressWidths();
@@ -305,6 +310,19 @@ function renderDevicesDialog(subscriptionId: string): string {
   return `<div class="dialog-backdrop" id="devices-dialog-backdrop"><section class="process-dialog card" role="dialog" aria-modal="true" aria-labelledby="devices-dialog-title"><header class="dialog-header"><div><h2 id="devices-dialog-title">Подключённые устройства</h2><p>Занято слотов: ${subscription.devices.used} из ${subscription.devices.limit}</p></div><button class="button icon-button" id="close-devices-dialog" aria-label="Закрыть">${icon("close")}</button></header><div class="device-list">${subscription.devices.items.length ? subscription.devices.items.map((device) => `<div class="device-row"><span class="process-icon">${icon("devices")}</span><span class="process-copy"><span class="process-name">${escapeHtml(device.label)}</span><span class="process-path">${escapeHtml(device.id)}</span></span>${subscription.actions.revokeDevice ? `<button class="button compact danger" data-revoke-device-id="${escapeAttribute(device.id)}" data-revoke-subscription-id="${escapeAttribute(subscription.uuid)}">${icon("unlink")} Отвязать</button>` : ""}</div>`).join("") : `<div class="empty">Активных устройств нет</div>`}</div><footer class="dialog-actions"><button class="button" id="close-devices-dialog-footer">Закрыть</button></footer></section></div>`;
 }
 
+function renderSupportDialog(dialog: { creating: boolean; url: string | null }): string {
+  const content = dialog.url
+    ? `<p class="support-dialog-text">Ссылка скопирована. Вставьте её в чат поддержки и опишите, что произошло. Открыть отчёт можно один раз в течение 7 дней.</p>
+      <label class="support-link-label" for="support-link">Ссылка на отчёт</label>
+      <div class="support-link-row"><input class="support-link" id="support-link" type="text" readonly value="${escapeAttribute(dialog.url)}" /><button class="button" id="copy-support-link">${icon("check")} Скопировать</button></div>`
+    : `<p class="support-dialog-text">Отчёт поможет быстрее разобраться с подключением. В него войдут версии приложения и системы, состояние подключения, выбранный сервер, настройки и последние записи журнала. IP-адреса, посещённые сайты и данные аккаунта в журнале скрыты.</p>
+      <p class="support-dialog-text">Отчёт шифруется на этом компьютере, а ключ остаётся только в ссылке. Прочитать отчёт сможет тот, кому вы её отправите.</p>`;
+  const actions = dialog.url
+    ? `<span class="dialog-spacer"></span><button class="button" id="close-support-dialog-footer">Закрыть</button><button class="button primary" id="open-support-chat">${icon("external")} Открыть чат поддержки</button>`
+    : `<button class="button" id="support-without-report">${icon("external")} Написать без отчёта</button><span class="dialog-spacer"></span><button class="button primary" id="create-support-report" ${dialog.creating ? "disabled" : ""}>${dialog.creating ? `<span class="spinner"></span> Готовим отчёт…` : `${icon("support")} Создать отчёт`}</button>`;
+  return `<div class="dialog-backdrop" id="support-dialog-backdrop"><section class="process-dialog support-dialog card" role="dialog" aria-modal="true" aria-labelledby="support-dialog-title"><header class="dialog-header"><div><h2 id="support-dialog-title">Сообщить о проблеме</h2><p>Чат поддержки Levik VPN в Telegram</p></div><button class="button icon-button" id="close-support-dialog" aria-label="Закрыть">${icon("close")}</button></header><div class="support-dialog-body">${content}</div><footer class="dialog-actions">${actions}</footer></section></div>`;
+}
+
 function switchSetting(name: string, help: string, key: keyof AppSettings, enabled: boolean): string {
   return `<div class="setting-row"><div><div class="setting-name">${name}</div><div class="setting-help">${help}</div></div><button class="switch ${enabled ? "on" : ""}" role="switch" aria-checked="${enabled}" data-setting="${key}" aria-label="${name}"></button></div>`;
 }
@@ -447,7 +465,23 @@ function bindPageEvents(): void {
     if (state?.update.status === "available") return window.levik.downloadUpdate();
     return window.levik.checkForUpdates();
   }));
-  listen(document.getElementById("support-button"), "click", () => run(() => window.levik.openExternal("https://t.me/leviksupportbot")));
+  listen(document.getElementById("support-button"), "click", () => {
+    supportDialog = { creating: false, url: null };
+    render();
+  });
+  listen(document.getElementById("close-support-dialog"), "click", closeSupportDialog);
+  listen(document.getElementById("close-support-dialog-footer"), "click", closeSupportDialog);
+  listen(document.getElementById("support-dialog-backdrop"), "click", (event) => {
+    if (event.target === event.currentTarget && !supportDialog?.creating) closeSupportDialog();
+  });
+  listen(document.getElementById("support-without-report"), "click", () => run(() => window.levik.openExternal(SUPPORT_CHAT_URL)));
+  listen(document.getElementById("open-support-chat"), "click", () => run(() => window.levik.openExternal(SUPPORT_CHAT_URL)));
+  listen(document.getElementById("create-support-report"), "click", () => void createSupportReport());
+  listen(document.getElementById("support-link"), "focus", (event) => (event.target as HTMLInputElement).select());
+  listen(document.getElementById("copy-support-link"), "click", () => {
+    const url = supportDialog?.url;
+    if (url) void run(() => navigator.clipboard.writeText(url));
+  });
   listen(document.getElementById("logout-button"), "click", () => {
     if (confirm("Выйти из Levik Account на этом компьютере? Текущий VPN-туннель будет остановлен.")) void run(() => window.levik.logout());
   });
@@ -541,6 +575,25 @@ function closeProcessDialog(): void {
   processDialogRequest += 1;
   showProcessDialog = false;
   processDialogLoading = false;
+  render();
+}
+
+async function createSupportReport(): Promise<void> {
+  if (!supportDialog || supportDialog.creating) return;
+  supportDialog = { creating: true, url: null };
+  render();
+  try {
+    const url = await window.levik.createSupportReport();
+    if (supportDialog) supportDialog = { creating: false, url };
+  } catch (error) {
+    if (supportDialog) supportDialog = { creating: false, url: null };
+    showToast(error instanceof Error ? error.message : String(error));
+  }
+  render();
+}
+
+function closeSupportDialog(): void {
+  supportDialog = null;
   render();
 }
 
