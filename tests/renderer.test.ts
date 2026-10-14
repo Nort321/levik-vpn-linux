@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { AppSnapshot, LevikDesktopApi } from "../src/shared/contracts";
 const snapshot: AppSnapshot = {
   appVersion: "1.0.0", tab: "home", status: "disconnected", statusDetail: null,
-  sessionAvailable: true, selectedServerId: "de", selectedSubscriptionId: "sub", serverLatencies: {},
+  sessionAvailable: true, selectedServerId: "de", selectedSubscriptionId: "sub", serverLatencies: {}, serverMaintenance: {},
   account: { userLabel: "Test", subscriptions: [{ uuid: "sub", title: "Test", status: "active", expireAt: null,
     traffic: { usedBytes: 0, limitBytes: 1000 }, devices: { used: 1, limit: 2, items: [{ id: "device", label: "Desktop" }] },
     shield: { supported: false, enabled: false }, actions: { renew: true, revokeDevice: true } }] },
@@ -108,5 +108,13 @@ describe("Rendered desktop integration", () => {
     expect(button("#login-button").getAttribute("aria-disabled")).toBeNull();
     expect(document.querySelector(".login-status")?.textContent).toContain("Вход отменён");
     expect(document.querySelector(".login-match")).toBeNull();
+  });
+  it("marks a server going into maintenance in the list", () => {
+    const end = new Date(2026, 9, 14, 14, 30).getTime();
+    emit({ ...snapshot, serverMaintenance: { de: end } });
+    button('[data-tab="servers"]').click();
+    expect(document.querySelector('[data-server-id="de"] .server-maintenance')?.textContent).toBe("Обслуживание до 14:30");
+    expect(button('[data-server-id="de"]').getAttribute("aria-label")).toContain("обслуживание до 14:30");
+    expect(document.querySelector('[data-server-id="nl"] .server-maintenance')).toBeNull();
   });
 });
