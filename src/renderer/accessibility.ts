@@ -83,7 +83,8 @@ export class KeyboardNavigation {
   }
   afterRender(): void {
     const previous = this.modal;
-    this.modal = this.root.querySelector<HTMLElement>('[role="dialog"]');
+    // The last modal is on top: a sign-in approval can open over another dialog.
+    this.modal = Array.from(this.root.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]')).at(-1) ?? null;
     const shell = this.root.querySelector<HTMLElement>(".shell");
     if (shell) shell.inert = Boolean(this.modal);
     if (this.modal && !previous) this.focusModal();

@@ -11,13 +11,14 @@ const snapshot: AppSnapshot = {
   settings: { routingMode: "global", automaticServer: true, autoReconnect: true, killSwitch: true, useDoh: true, dnsServer: "1.1.1.1", theme: "dark", launchAtLogin: false, autoConnectOnLaunch: false, closeToTray: true, preventDnsLeaks: true, favoriteServerIds: [], favoriteNodes: null, antiDpiEnabled: false, antiDpiPackets: "tlshello", antiDpiLength: "100-200", antiDpiInterval: "10-20", splitTunnelMode: "bypass", splitTunnelProcesses: [], connectionTelemetry: true, telemetryNoticeShown: true, syncSettings: true, sharePresence: true },
   sessionStartedAt: null, downloadBytes: 0, uploadBytes: 0, logs: [], busy: false,
   update: { status: "idle", version: null, progress: null, message: null },
-  announcements: [], settingsSyncedAt: null,
+  announcements: [], settingsSyncedAt: null, pendingApprovals: [], loginPending: false,
 };
 let emit: (value: AppSnapshot) => void = () => {};
 const noop = vi.fn(async () => {});
 const bridge: LevikDesktopApi = {
   snapshot: async () => structuredClone(snapshot), onSnapshot: (listener) => { emit = listener; return () => {}; },
-  login: async () => ({ verificationUri: "https://leviknet.com", verificationCode: null, expiresAt: "" }),
+  login: async () => ({ verificationUri: "https://leviknet.com", verificationCode: null, expiresAt: "", matchNumber: 37, telegramUri: null, approvalRequested: true }),
+  answerApproval: vi.fn(async () => "approved" as const),
   cancelLogin: noop, logout: noop, refreshAccount: noop, selectSubscription: noop, selectServer: vi.fn(async () => {}),
   connect: noop, disconnect: noop, updateSettings: vi.fn(async () => {}), openExternal: noop,
   listProcesses: async () => [{ name: "firefox", path: "/usr/bin/firefox", running: true }, { name: "code", path: "/usr/bin/code", running: true }],
@@ -73,5 +74,39 @@ describe("Rendered desktop integration", () => {
     expect(bridge.dismissAnnouncement).toHaveBeenCalledWith("0b8f5f0e-7d1c-4d6f-9b6a-1d8f0e2a3b4c");
     button("#cabinet-button").click();
     expect(bridge.openCabinet).toHaveBeenCalledWith("/dashboard");
+  });
+  it("asks for the number of a new sign-in, answers once and hides it on Escape", async () => {
+    const approval = { id: "5e0c7a52-8b1d-4f3a-9c2e-7d6b5a4f3e21", deviceName: "<b>DESKTOP-7F</b>", platformLabel: "Windows", choices: [37, 52, 81], expiresAt: new Date(Date.now() + 300_000).toISOString() };
+    emit({ ...snapshot, pendingApprovals: [approval] });
+    const dialog = document.querySelector('[role="alertdialog"]');
+    expect(dialog?.textContent).toContain("<b>DESKTOP-7F</b>");
+    expect(dialog?.querySelector("b")).toBeNull();
+    expect(dialog?.contains(document.activeElement)).toBe(true);
+    for (let i = 1; i <= 3; i++) emit({ ...snapshot, downloadBytes: i, pendingApprovals: [approval] });
+    button('[data-approval-number="52"]').click();
+    expect(bridge.answerApproval).toHaveBeenCalledTimes(1);
+    expect(bridge.answerApproval).toHaveBeenCalledWith(approval.id, 52);
+    await Promise.resolve(); await Promise.resolve();
+    const second = { ...approval, id: "6f1d8b63-9c2e-4a4b-8d3f-8e7c6b5a4f32" };
+    emit({ ...snapshot, pendingApprovals: [second] });
+    press("Escape");
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    emit({ ...snapshot, pendingApprovals: [second] });
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(bridge.answerApproval).toHaveBeenCalledTimes(1);
+  });
+  it("shows the sign-in number and offers to start again once the attempt is over", async () => {
+    const signedOut = { ...snapshot, sessionAvailable: false, account: null };
+    emit(signedOut);
+    button("#login-button").click();
+    emit({ ...signedOut, busy: true });
+    await Promise.resolve(); await Promise.resolve();
+    emit({ ...signedOut, loginPending: true });
+    expect(document.querySelector(".login-match-number")?.textContent).toBe("37");
+    expect(button("#login-button").getAttribute("aria-disabled")).toBe("true");
+    emit({ ...signedOut, loginPending: false, statusDetail: "Вход отменён: выбрано другое число или нажато «Это не я»" });
+    expect(button("#login-button").getAttribute("aria-disabled")).toBeNull();
+    expect(document.querySelector(".login-status")?.textContent).toContain("Вход отменён");
+    expect(document.querySelector(".login-match")).toBeNull();
   });
 });
