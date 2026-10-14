@@ -13,7 +13,7 @@
   <a href="https://github.com/Nort321/levik-vpn-linux/releases/latest/download/LevikVPN-Linux-x64.AppImage">Скачать AppImage</a> ·
   <a href="https://github.com/Nort321/levik-vpn-linux/releases/latest/download/LevikVPN-Linux-x64.deb">Скачать .deb</a> ·
   <a href="https://github.com/Nort321/levik-vpn-linux/releases/latest">Все релизы</a> ·
-  <a href="https://leviknet.com">Официальный сайт</a> ·
+  <a href="https://leviknet.org">Официальный сайт</a> ·
   <a href="https://t.me/leviksupportbot">Поддержка</a>
 </p>
 

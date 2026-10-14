@@ -8,7 +8,7 @@ const snapshot: AppSnapshot = {
     traffic: { usedBytes: 0, limitBytes: 1000 }, devices: { used: 1, limit: 2, items: [{ id: "device", label: "Desktop" }] },
     shield: { supported: false, enabled: false }, actions: { renew: true, revokeDevice: true } }] },
   servers: [{ id: "de", tag: "de", name: "Berlin", countryCode: "DE", outbound: { protocol: "vless" } }, { id: "nl", tag: "nl", name: "Amsterdam", countryCode: "NL", outbound: { protocol: "vless" } }],
-  settings: { routingMode: "global", automaticServer: true, autoReconnect: true, killSwitch: true, useDoh: true, dnsServer: "1.1.1.1", theme: "dark", launchAtLogin: false, autoConnectOnLaunch: false, closeToTray: true, preventDnsLeaks: true, favoriteServerIds: [], antiDpiEnabled: false, antiDpiPackets: "tlshello", antiDpiLength: "100-200", antiDpiInterval: "10-20", splitTunnelMode: "bypass", splitTunnelProcesses: [], connectionTelemetry: true, telemetryNoticeShown: true, syncSettings: true },
+  settings: { routingMode: "global", automaticServer: true, autoReconnect: true, killSwitch: true, useDoh: true, dnsServer: "1.1.1.1", theme: "dark", launchAtLogin: false, autoConnectOnLaunch: false, closeToTray: true, preventDnsLeaks: true, favoriteServerIds: [], favoriteNodes: null, antiDpiEnabled: false, antiDpiPackets: "tlshello", antiDpiLength: "100-200", antiDpiInterval: "10-20", splitTunnelMode: "bypass", splitTunnelProcesses: [], connectionTelemetry: true, telemetryNoticeShown: true, syncSettings: true },
   sessionStartedAt: null, downloadBytes: 0, uploadBytes: 0, logs: [], busy: false,
   update: { status: "idle", version: null, progress: null, message: null },
   announcements: [], settingsSyncedAt: null,
