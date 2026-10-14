@@ -12,3 +12,5 @@ coverage/
 *.key
 __pycache__/
 *.pyc
+*.orig
+*.rej
