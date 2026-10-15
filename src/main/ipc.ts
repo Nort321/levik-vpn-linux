@@ -1,6 +1,6 @@
 import { clipboard, dialog, ipcMain, shell } from "electron";
 import type { BrowserWindow } from "electron";
-import { IPC } from "../shared/contracts";
+import { IPC, isDiagnosisAction } from "../shared/contracts";
 import { isRemoteCommand } from "../shared/remote";
 import type { AppSettings, CabinetTarget } from "../shared/contracts";
 import { AppController } from "./appController";
@@ -76,6 +76,11 @@ export function registerIpc(controller: AppController, window: BrowserWindow): v
     const url = await controller.createSupportReport();
     clipboard.writeText(url);
     return url;
+  });
+  ipcMain.handle(IPC.diagnose, () => controller.diagnose());
+  ipcMain.handle(IPC.applyDiagnosisAction, async (_event, action: unknown) => {
+    if (!isDiagnosisAction(action)) throw new Error("Некорректное действие");
+    await controller.applyDiagnosisAction(action);
   });
   ipcMain.handle(IPC.dismissAnnouncement, (_event, id: unknown) => {
     if (typeof id !== "string") throw new Error("Некорректное сообщение");

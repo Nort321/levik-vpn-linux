@@ -27,6 +27,8 @@ const bridge: LevikDesktopApi = {
   authorizeActivation: noop, checkForUpdates: noop, downloadUpdate: noop, installUpdate: noop, createSupportReport: async () => "https://note.leviknet.com/x#v1.key",
   dismissAnnouncement: vi.fn(async () => {}), openCabinet: vi.fn(async () => {}), onNavigate: () => () => {},
   refreshRemote: noop, sendRemoteCommand: vi.fn(async () => {}), openRemoteNote: vi.fn(async () => {}),
+  diagnose: vi.fn(async () => ({ verdict: "SERVICE_RESTRICTED", text: "YouTube ограничен в России: через VPN он работает.", action: "connect" as const, actionLabel: "Подключить VPN" })),
+  applyDiagnosisAction: vi.fn(async () => {}),
 };
 function button(selector: string): HTMLButtonElement { const node = document.querySelector<HTMLButtonElement>(selector); if (!node) throw new Error(`Missing ${selector}`); return node; }
 function press(key: string, ctrlKey = false): void { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true })); }
@@ -142,5 +144,18 @@ describe("Rendered desktop integration", () => {
     button(`[data-remote-note="${id}"]`).click();
     expect(bridge.openRemoteNote).toHaveBeenCalledWith(id);
     press("Escape"); expect(document.querySelector('[role="dialog"]')).toBeNull(); expect(document.activeElement).toBe(trigger);
+  });
+  it("checks what is wrong when the support dialog opens and offers one button", async () => {
+    emit({ ...snapshot });
+    button('[data-tab="profile"]').click();
+    button("#support-button").click();
+    expect(document.querySelector(".diagnosis")?.getAttribute("aria-busy")).toBe("true");
+    await Promise.resolve(); await Promise.resolve();
+    expect(bridge.diagnose).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".diagnosis-text")?.textContent).toBe("YouTube ограничен в России: через VPN он работает.");
+    button("#diagnosis-action").click();
+    await Promise.resolve();
+    expect(bridge.applyDiagnosisAction).toHaveBeenCalledWith("connect");
+    expect(document.querySelector(".support-dialog")).toBeNull();
   });
 });
