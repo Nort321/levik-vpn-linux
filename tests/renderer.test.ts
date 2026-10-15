@@ -12,6 +12,7 @@ const snapshot: AppSnapshot = {
   sessionStartedAt: null, downloadBytes: 0, uploadBytes: 0, logs: [], busy: false,
   update: { status: "idle", version: null, progress: null, message: null },
   announcements: [], settingsSyncedAt: null, pendingApprovals: [], loginPending: false,
+  remote: { devices: [], commands: [], notes: {}, loadedAt: null },
 };
 let emit: (value: AppSnapshot) => void = () => {};
 const noop = vi.fn(async () => {});
@@ -25,6 +26,7 @@ const bridge: LevikDesktopApi = {
   selectExecutable: async () => null, pingServers: noop, revokeDevice: noop, setSubscriptionShield: noop,
   authorizeActivation: noop, checkForUpdates: noop, downloadUpdate: noop, installUpdate: noop, createSupportReport: async () => "https://note.leviknet.com/x#v1.key",
   dismissAnnouncement: vi.fn(async () => {}), openCabinet: vi.fn(async () => {}), onNavigate: () => () => {},
+  refreshRemote: noop, sendRemoteCommand: vi.fn(async () => {}), openRemoteNote: vi.fn(async () => {}),
 };
 function button(selector: string): HTMLButtonElement { const node = document.querySelector<HTMLButtonElement>(selector); if (!node) throw new Error(`Missing ${selector}`); return node; }
 function press(key: string, ctrlKey = false): void { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true })); }
@@ -116,5 +118,29 @@ describe("Rendered desktop integration", () => {
     expect(document.querySelector('[data-server-id="de"] .server-maintenance')?.textContent).toBe("Обслуживание до 14:30");
     expect(button('[data-server-id="de"]').getAttribute("aria-label")).toContain("обслуживание до 14:30");
     expect(document.querySelector('[data-server-id="nl"] .server-maintenance')).toBeNull();
+  });
+  it("sends remote commands to another app once, waits for the answer and opens its diagnostics", () => {
+    const phone = { deviceId: "phone", name: "<i>Pixel</i>", platform: "android" as const, appVersion: "2.7.30", current: false, remote: true, online: true, vpnConnected: true, country: "DE" };
+    const self = { ...phone, deviceId: "self", name: "Laptop", platform: "linux" as const, current: true };
+    const remote = { devices: [self, phone], commands: [], notes: {}, loadedAt: Date.now() };
+    emit({ ...snapshot, remote });
+    button('[data-tab="profile"]').click();
+    expect(document.querySelector('[data-remote-device-id="self"]')).toBeNull();
+    expect(document.querySelector(".remote-devices")?.innerHTML).toContain("&lt;i&gt;Pixel&lt;/i&gt;");
+    const trigger = button('[data-remote-device-id="phone"]'); trigger.focus(); trigger.click();
+    expect(document.querySelector('[role="dialog"]')?.contains(document.activeElement)).toBe(true);
+    expect(document.querySelector('[data-remote-command="disconnect"]')).toBeNull();
+    emit({ ...snapshot, remote, downloadBytes: 5 });
+    button('[data-remote-command="connect"]').click();
+    expect(bridge.sendRemoteCommand).toHaveBeenCalledTimes(1);
+    expect(bridge.sendRemoteCommand).toHaveBeenCalledWith("phone", "connect");
+    const id = "0b8f5f0e-7d1c-4d6f-9b6a-1d8f0e2a3b4d";
+    emit({ ...snapshot, remote: { ...remote, commands: [{ id, deviceId: "phone", command: "collect_diagnostics", state: "delivered", detail: null }] } });
+    expect(button('[data-remote-command="connect"]').getAttribute("aria-disabled")).toBe("true");
+    expect(document.querySelector("#remote-dialog-status")?.textContent).toContain("выполняет");
+    emit({ ...snapshot, remote: { ...remote, commands: [{ id, deviceId: "phone", command: "collect_diagnostics", state: "done", detail: "sealed" }], notes: { [id]: "https://note.leviknet.org/a#b" } } });
+    button(`[data-remote-note="${id}"]`).click();
+    expect(bridge.openRemoteNote).toHaveBeenCalledWith(id);
+    press("Escape"); expect(document.querySelector('[role="dialog"]')).toBeNull(); expect(document.activeElement).toBe(trigger);
   });
 });
