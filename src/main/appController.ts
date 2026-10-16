@@ -12,13 +12,14 @@ import type {
   ApprovalAnswerResult,
   CabinetTarget,
   DiagnosisAction,
+  HomeRoadSnapshot,
   DiagnosisSummary,
   LoginChallenge,
   PendingApproval,
   TunnelServer,
 } from "../shared/contracts";
 import { isAuthenticationRejected, MobileApiClient, MobileApiError } from "./api/mobileApiClient";
-import type { AuthChallengeResponse, MobileAccountResponse } from "./api/models";
+import type { AuthChallengeResponse, MobileAccountResponse, RoadExitResponse } from "./api/models";
 import { DeviceIdentity } from "./security/deviceIdentity";
 import type { SerializedIdentity } from "./security/deviceIdentity";
 import { RequestSigner } from "./security/requestSigner";
@@ -42,7 +43,9 @@ import { createSupportNote, MAX_SUPPORT_NOTE_BYTES, supportNoteText } from "./di
 import { supportReportText } from "./diagnostics/supportReport";
 import type { AttemptCause, AttemptStage, EndBy, PowerState, SessionSettings, SessionTrigger } from "./telemetry/sessionRecorder";
 import { cabinetFallbackUrl, isAllowedExternalUrl, isHandoffUrl } from "./platform/links";
-import { ServiceEndpointsStore } from "./platform/serviceEndpoints";
+import { serviceEndpoints, ServiceEndpointsStore, websiteHosts } from "./platform/serviceEndpoints";
+import { HomeRoadExit, isHomeRoadServer, parseRoadExit } from "./platform/homeRoad";
+import { findLinuxOutboundInterface } from "./linux/outboundInterface";
 import { DEFAULT_API_ORIGIN } from "./api/apiEndpoints";
 import { parseAccountNotices } from "./platform/accountNotices";
 import { beaconFresh, HomeSleepPolicy, localAddresses, parseSighting, protects, scanHomes } from "./platform/levikHome";
@@ -123,6 +126,8 @@ const LINK_REFRESH_INTERVAL_MS = 30_000;
 /** Signed host list: checked twice a day, and at most once a minute when every host fails. */
 const ENDPOINTS_REFRESH_MS = 12 * 60 * 60_000;
 const ENDPOINTS_RETRY_MS = 60_000;
+/** «Дорога домой»: the exit's relay token is renewed long before its 30 days run out. */
+const HOME_ROAD_REFRESH_MS = 6 * 60 * 60_000;
 
 const DEFAULT_SETTINGS: AppSettings = {
   routingMode: "global",
@@ -162,6 +167,14 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   private readonly xray = new XrayManager();
   private readonly dnsLeakProtection = new DnsLeakProtection();
   private readonly killSwitch = new LinuxKillSwitch();
+  private readonly homeRoad = new HomeRoadExit({
+    xrayPath: () => this.xray.executablePath(),
+    log: (line) => this.diskLog?.write(line),
+    findInterface: () => findLinuxOutboundInterface(),
+  });
+  private homeRoadAvailable = false;
+  private homeRoadChain: Promise<void> = Promise.resolve();
+  private lastHomeRoadAt = 0;
   private readonly updater: AppUpdater | null;
   private identity!: DeviceIdentity;
   private api!: MobileApiClient;
@@ -264,10 +277,15 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     pendingApprovals: [],
     loginPending: false,
     settingsSyncedAt: null,
+    homeRoad: null,
   };
 
   constructor() {
     super();
+    this.homeRoad.on("status", (status, detail) => {
+      if (status === "error" && detail) this.addLog(`Дорога домой: ${detail}`);
+      this.patch({ homeRoad: this.homeRoadSnapshot() });
+    });
     try {
       this.updater = new AppUpdater();
       this.updater.on("changed", (update) => this.patch({ update }));
@@ -350,6 +368,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       } catch (error) {
         this.addLog(`Синхронизация аккаунта: ${messageOf(error)}`);
       }
+      this.refreshHomeRoadSoon();
     }
     if (this.profile) {
       if (this.state.settings.autoConnectOnLaunch) {
@@ -647,7 +666,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     // Unsent setting changes are kept on disk and sent after the next start.
     if (this.settingsPushTimer) clearTimeout(this.settingsPushTimer);
     this.settingsPushTimer = null;
-    await this.stopConnection("system", null);
+    await Promise.all([this.stopConnection("system", null), this.homeRoad.stop()]);
     networkHelper.close();
     await saved;
     this.telemetry.dispose();
@@ -828,6 +847,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
           if (!this.accessToken) throw error;
           this.addLog(`Синхронизация аккаунта: ${messageOf(error)}`);
         }
+        this.refreshHomeRoadSoon();
         this.patch({ statusDetail: "Вход выполнен" });
         return;
       } catch (error) {
@@ -866,6 +886,8 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     if (!this.accessToken) return;
     if (now - this.lastAccountCheckAt >= ACCOUNT_CHECK_INTERVAL_MS) await this.checkAccount();
     if (!this.liveEvents?.active) this.startLiveEvents();
+    if (now - this.lastHomeRoadAt >= HOME_ROAD_REFRESH_MS) this.refreshHomeRoadSoon();
+    else this.recheckHomeRoad();
     if (Object.keys(this.pendingSync).length || now - this.lastSettingsSyncAt >= SETTINGS_SYNC_INTERVAL_MS) {
       await this.syncSettingsNow();
     }
@@ -943,6 +965,62 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     }
   }
 
+  /** «Пускать ко мне домой», docs/app-platform.md "Home road". */
+  async setHomeRoad(enabled: boolean): Promise<void> {
+    const task = this.homeRoadChain.then(async () => {
+      const response = await this.withSession((token) => this.api.setRoadExit(token, enabled));
+      await this.applyHomeRoad(response);
+    });
+    this.homeRoadChain = task.catch(() => {});
+    await task;
+  }
+
+  private refreshHomeRoadSoon(): void {
+    this.homeRoadChain = this.homeRoadChain.then(() => this.refreshHomeRoad()).catch((error: unknown) => {
+      // The running exit keeps its token (valid for 30 days) until the website answers again.
+      this.addLog(`Дорога домой: ${messageOf(error)}`);
+    });
+  }
+
+  private async refreshHomeRoad(): Promise<void> {
+    if (!this.accessToken) return;
+    await this.applyHomeRoad(await this.withSession((token) => this.api.roadExit(token)));
+  }
+
+  private async applyHomeRoad(response: RoadExitResponse): Promise<void> {
+    if (!this.accessToken) return;
+    this.lastHomeRoadAt = Date.now();
+    this.homeRoadAvailable = response.available === true;
+    const hosts = new Set([...websiteHosts(), ...serviceEndpoints().apiOrigins.map((origin) => new URL(origin).hostname)]);
+    const config = response.exit == null ? null : parseRoadExit(response.exit, hosts);
+    if (response.exit != null && !config) this.addLog("Дорога домой: сайт прислал выход, который приложение не принимает");
+    await this.homeRoad.apply(config);
+    this.patch({ homeRoad: this.homeRoadSnapshot() });
+  }
+
+  /** Another network may mean another interface for the «past the VPN» exit. */
+  private recheckHomeRoad(): void {
+    if (this.homeRoad.config?.mode !== "direct") return;
+    this.homeRoadChain = this.homeRoadChain.then(async () => {
+      const config = this.homeRoad.config;
+      if (config?.mode === "direct") await this.homeRoad.apply(config);
+    }).catch(() => {});
+  }
+
+  private homeRoadSnapshot(): HomeRoadSnapshot | null {
+    if (!this.accessToken) return null;
+    const config = this.homeRoad.config;
+    return {
+      available: this.homeRoadAvailable,
+      enabled: config !== null,
+      name: config?.name ?? null,
+      mode: config?.mode ?? null,
+      lanAccess: config?.lanAccess ?? false,
+      status: this.homeRoad.status,
+      detail: this.homeRoad.statusDetail,
+    };
+  }
+
   private async checkAccount(force = false): Promise<void> {
     if (!this.accessToken) return;
     if (!force && Date.now() - this.lastAccountCheckAt < 10_000) return;
@@ -973,6 +1051,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
         void this.refreshRemoteConfig();
         void this.checkAccount();
         this.reportPresenceSoon(true);
+        this.refreshHomeRoadSoon();
         break;
       case "settings":
         void this.syncSettingsNow();
@@ -983,6 +1062,10 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       case "devices":
         void this.checkAccount(true);
         this.refreshRemoteIfWatched();
+        this.refreshHomeRoadSoon();
+        break;
+      case "road":
+        this.refreshHomeRoadSoon();
         break;
       case "presence":
         this.refreshRemoteIfWatched();
@@ -1497,6 +1580,9 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   private async clearLocalSession(statusDetail: string | null): Promise<void> {
     this.liveEvents?.stop();
+    this.homeRoadAvailable = false;
+    this.lastHomeRoadAt = 0;
+    await this.homeRoad.stop();
     this.replyKeys.clear();
     this.remoteWatchedUntil = 0;
     if (this.approvalsTimer) clearTimeout(this.approvalsTimer);
@@ -1534,6 +1620,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       selectedServerId: null,
       selectedSubscriptionId: null,
       statusDetail,
+      homeRoad: null,
     });
   }
 
@@ -1838,9 +1925,12 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private bestServer(servers: TunnelServer[]): TunnelServer | null {
-    const nonRussian = servers.filter((item) => item.countryCode.toUpperCase() !== "RU");
+    // A home exit («🏠») is only ever the user's own choice.
+    const ordinary = servers.filter((item) => !isHomeRoadServer(item.name));
+    const pool = ordinary.length ? ordinary : servers;
+    const nonRussian = pool.filter((item) => item.countryCode.toUpperCase() !== "RU");
     // Servers going into maintenance are left out while others remain.
-    const eligible = avoidMaintenance(nonRussian.length ? nonRussian : servers, this.maintenanceWindows(), nodeIdForServer, Date.now());
+    const eligible = avoidMaintenance(nonRussian.length ? nonRussian : pool, this.maintenanceWindows(), nodeIdForServer, Date.now());
     // Protocols that work on the user's operator first, unless none of them answers.
     const advised = adviceCandidates(eligible, currentAdvice(this.remoteStored, Date.now()), protocolOf);
     const measured = (items: TunnelServer[]) => items.some((item) => this.state.serverLatencies[item.id] != null);

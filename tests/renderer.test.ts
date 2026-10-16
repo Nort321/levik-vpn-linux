@@ -11,7 +11,7 @@ const snapshot: AppSnapshot = {
   settings: { routingMode: "global", automaticServer: true, autoReconnect: true, killSwitch: true, useDoh: true, dnsServer: "1.1.1.1", theme: "dark", launchAtLogin: false, autoConnectOnLaunch: false, closeToTray: true, preventDnsLeaks: true, favoriteServerIds: [], favoriteNodes: null, antiDpiEnabled: false, antiDpiPackets: "tlshello", antiDpiLength: "100-200", antiDpiInterval: "10-20", splitTunnelMode: "bypass", splitTunnelProcesses: [], connectionTelemetry: true, telemetryNoticeShown: true, syncSettings: true, sharePresence: true, sleepAtHome: true },
   sessionStartedAt: null, downloadBytes: 0, uploadBytes: 0, logs: [], busy: false,
   update: { status: "idle", version: null, progress: null, message: null },
-  announcements: [], settingsSyncedAt: null, pendingApprovals: [], loginPending: false,
+  announcements: [], settingsSyncedAt: null, pendingApprovals: [], loginPending: false, homeRoad: null,
   remote: { devices: [], commands: [], notes: {}, loadedAt: null },
 };
 let emit: (value: AppSnapshot) => void = () => {};
@@ -26,7 +26,7 @@ const bridge: LevikDesktopApi = {
   selectExecutable: async () => null, pingServers: noop, revokeDevice: noop, setSubscriptionShield: noop,
   authorizeActivation: noop, checkForUpdates: noop, downloadUpdate: noop, installUpdate: noop, createSupportReport: async () => "https://note.leviknet.com/x#v1.key",
   dismissAnnouncement: vi.fn(async () => {}), openCabinet: vi.fn(async () => {}), onNavigate: () => () => {},
-  refreshRemote: noop, sendRemoteCommand: vi.fn(async () => {}), openRemoteNote: vi.fn(async () => {}),
+  refreshRemote: noop, sendRemoteCommand: vi.fn(async () => {}), openRemoteNote: vi.fn(async () => {}), setHomeRoad: vi.fn(async () => {}),
   diagnose: vi.fn(async () => ({ verdict: "SERVICE_RESTRICTED", text: "YouTube ограничен в России: через VPN он работает.", action: "connect" as const, actionLabel: "Подключить VPN" })),
   applyDiagnosisAction: vi.fn(async () => {}),
 };
@@ -78,6 +78,22 @@ describe("Rendered desktop integration", () => {
     expect(bridge.dismissAnnouncement).toHaveBeenCalledWith("0b8f5f0e-7d1c-4d6f-9b6a-1d8f0e2a3b4c");
     button("#cabinet-button").click();
     expect(bridge.openCabinet).toHaveBeenCalledWith("/dashboard");
+  });
+  it("lets people in at home from Settings and shows how the exit is doing", async () => {
+    button('[data-tab="profile"]').click();
+    expect(document.querySelector("#home-road-switch")).toBeNull();
+    const road = { available: true, enabled: false, name: null, mode: null, lanAccess: false, status: "off" as const, detail: null };
+    emit({ ...snapshot, homeRoad: road });
+    button("#home-road-switch").click();
+    await Promise.resolve();
+    expect(bridge.setHomeRoad).toHaveBeenCalledWith(true);
+    emit({ ...snapshot, homeRoad: { ...road, enabled: true, name: "<i>Дом</i>", mode: "direct", status: "online" } });
+    expect(button("#home-road-switch").getAttribute("aria-checked")).toBe("true");
+    expect(document.querySelector("#home-road-title")?.closest("section")?.textContent).toContain("«<i>Дом</i>», домашний интернет мимо VPN");
+    emit({ ...snapshot, homeRoad: { ...road, enabled: true, name: "Дом", mode: "direct", status: "online" }, status: "connected", settings: { ...snapshot.settings, killSwitch: true } });
+    expect(document.querySelector(".setting-warning")).not.toBeNull();
+    button("#home-road-cabinet-button").click();
+    expect(bridge.openCabinet).toHaveBeenCalledWith("/dashboard/road");
   });
   it("asks for the number of a new sign-in, answers once and hides it on Escape", async () => {
     const approval = { id: "5e0c7a52-8b1d-4f3a-9c2e-7d6b5a4f3e21", deviceName: "<b>DESKTOP-7F</b>", platformLabel: "Windows", choices: [37, 52, 81], expiresAt: new Date(Date.now() + 300_000).toISOString() };

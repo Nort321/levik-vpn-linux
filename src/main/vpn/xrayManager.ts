@@ -1,4 +1,6 @@
+import { app } from "electron";
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import { parseXrayStats } from "./xrayStats";
 import { bindXrayOutboundInterface } from "./xrayConfig";
 import { findLinuxOutboundInterface } from "../linux/outboundInterface";
@@ -22,6 +24,10 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     this.running = true;
     this.timer = setInterval(() => void this.queryStats(), 2000);
     this.emit("log", "Linux TUN подключён; сетевые настройки применены");
+  }
+  /** The bundled core run as this user, for the home exit (the tunnel's core runs in the helper). */
+  executablePath(): string {
+    return app.isPackaged ? join(process.resourcesPath, "xray", "xray") : join(app.getAppPath(), "vendor", "xray", "linux-x64", "xray");
   }
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
