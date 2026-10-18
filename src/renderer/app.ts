@@ -255,10 +255,11 @@ function serverCard(server: TunnelServer): string {
   const selected = state?.selectedServerId === server.id;
   const favorite = state?.settings.favoriteServerIds.includes(server.id) ?? false;
   const latency = state?.serverLatencies[server.id];
+  const load = serverLoadLabel(state?.serverLoad[server.id]);
   const maintenanceEnd = state?.serverMaintenance[server.id];
   const maintenance = maintenanceEnd === undefined ? "" : `Обслуживание до ${maintenanceTime.format(maintenanceEnd)}`;
   const filter = `${server.name} ${countryLabel(server.countryCode)} ${server.countryCode}`.toLocaleLowerCase("ru");
-  return `<div class="server-card ${selected ? "selected" : ""}" data-server-filter="${escapeAttribute(filter)}" data-server-favorite="${favorite}"><button class="server-select" aria-pressed="${selected}" data-server-id="${escapeAttribute(server.id)}" aria-label="Выбрать ${escapeAttribute(server.name)}${maintenance ? `, ${escapeAttribute(maintenance.toLocaleLowerCase("ru"))}` : ""}"><span class="server-flag" aria-hidden="true">${countryFlagSvg(server.countryCode)}</span><span class="server-copy"><span class="server-name">${escapeHtml(server.name)}</span><span class="server-meta">${escapeHtml(countryLabel(server.countryCode))} · ${escapeHtml(serverProtocol(server))} · ${latency === undefined ? "не измерен" : latency === null ? "нет ответа" : `${latency} мс`}</span>${maintenance ? `<span class="server-maintenance">${escapeHtml(maintenance)}</span>` : ""}</span><span class="radio"></span></button><button class="favorite-button ${favorite ? "active" : ""}" data-favorite-server-id="${escapeAttribute(server.id)}" aria-label="${favorite ? "Удалить из избранного" : "Добавить в избранное"}" aria-pressed="${favorite}">${icon("star")}</button></div>`;
+  return `<div class="server-card ${selected ? "selected" : ""}" data-server-filter="${escapeAttribute(filter)}" data-server-favorite="${favorite}"><button class="server-select" aria-pressed="${selected}" data-server-id="${escapeAttribute(server.id)}" aria-label="Выбрать ${escapeAttribute(server.name)}${maintenance ? `, ${escapeAttribute(maintenance.toLocaleLowerCase("ru"))}` : ""}"><span class="server-flag" aria-hidden="true">${countryFlagSvg(server.countryCode)}</span><span class="server-copy"><span class="server-name">${escapeHtml(server.name)}</span><span class="server-meta">${escapeHtml(countryLabel(server.countryCode))} · ${escapeHtml(serverProtocol(server))} · ${latency === undefined ? "не измерен" : latency === null ? "нет ответа" : `${latency} мс`}${load && !maintenance ? ` · <span class="server-load ${load.level}">${load.text}</span>` : ""}</span>${maintenance ? `<span class="server-maintenance">${escapeHtml(maintenance)}</span>` : ""}</span><span class="radio"></span></button><button class="favorite-button ${favorite ? "active" : ""}" data-favorite-server-id="${escapeAttribute(server.id)}" aria-label="${favorite ? "Удалить из избранного" : "Добавить в избранное"}" aria-pressed="${favorite}">${icon("star")}</button></div>`;
 }
 
 function renderStats(): string {
@@ -1155,4 +1156,12 @@ function icon(name: IconName): string {
     remote: '<rect x="7" y="2" width="10" height="20" rx="3"/><circle cx="12" cy="8" r="2"/><path d="M10 14h.01M14 14h.01M10 17h.01M14 17h.01"/>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
+}
+
+/** Node load from the website: free below 0.4, busy below 0.75, crowded above. */
+function serverLoadLabel(load: number | undefined): { level: "free" | "busy" | "full"; text: string } | null {
+  if (load === undefined) return null;
+  if (load < 0.4) return { level: "free", text: "свободен" };
+  if (load < 0.75) return { level: "busy", text: "средняя нагрузка" };
+  return { level: "full", text: "загружен" };
 }

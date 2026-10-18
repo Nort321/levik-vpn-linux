@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { AppSnapshot, LevikDesktopApi } from "../src/shared/contracts";
 const snapshot: AppSnapshot = {
   appVersion: "1.0.0", tab: "home", status: "disconnected", statusDetail: null,
-  sessionAvailable: true, selectedServerId: "de", selectedSubscriptionId: "sub", serverLatencies: {}, serverMaintenance: {},
+  sessionAvailable: true, selectedServerId: "de", selectedSubscriptionId: "sub", serverLatencies: {}, serverMaintenance: {}, serverLoad: {},
   account: { userLabel: "Test", subscriptions: [{ uuid: "sub", title: "Test", status: "active", expireAt: null,
     traffic: { usedBytes: 0, limitBytes: 1000 }, devices: { used: 1, limit: 2, items: [{ id: "device", label: "Desktop" }] },
     shield: { supported: false, enabled: false }, actions: { renew: true, revokeDevice: true } }] },
