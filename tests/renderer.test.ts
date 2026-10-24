@@ -13,6 +13,7 @@ const snapshot: AppSnapshot = {
   update: { status: "idle", version: null, progress: null, message: null },
   announcements: [], settingsSyncedAt: null, pendingApprovals: [], loginPending: false, homeRoad: null,
   remote: { devices: [], commands: [], notes: {}, loadedAt: null },
+  drop: { available: false, loadedAt: null, devices: [], transfers: [], quota: null, limits: { maxFiles: 20, maxBytes: 2 * 1024 ** 3 }, folder: "/home/test/Downloads", error: null },
 };
 let emit: (value: AppSnapshot) => void = () => {};
 const noop = vi.fn(async () => {});
@@ -29,6 +30,8 @@ const bridge: LevikDesktopApi = {
   refreshRemote: noop, sendRemoteCommand: vi.fn(async () => {}), openRemoteNote: vi.fn(async () => {}), setHomeRoad: vi.fn(async () => {}),
   diagnose: vi.fn(async () => ({ verdict: "SERVICE_RESTRICTED", text: "YouTube ограничен в России: через VPN он работает.", action: "connect" as const, actionLabel: "Подключить VPN" })),
   applyDiagnosisAction: vi.fn(async () => {}),
+  refreshDrop: noop, sendDropFiles: vi.fn(async () => {}), dropFilePaths: () => [], answerDrop: vi.fn(async () => {}),
+  controlDrop: vi.fn(async () => {}), chooseDropFolder: noop, showDropFiles: noop,
 };
 function button(selector: string): HTMLButtonElement { const node = document.querySelector<HTMLButtonElement>(selector); if (!node) throw new Error(`Missing ${selector}`); return node; }
 function press(key: string, ctrlKey = false): void { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true })); }
@@ -173,5 +176,20 @@ describe("Rendered desktop integration", () => {
     await Promise.resolve();
     expect(bridge.applyDiagnosisAction).toHaveBeenCalledWith("connect");
     expect(document.querySelector(".support-dialog")).toBeNull();
+  });
+  it("shows a LevikDrop offer with its code and answers with that code", async () => {
+    const transfer = {
+      id: "11111111-2222-4333-8444-555555555555", role: "receiver" as const, peerDeviceId: "phone", peerName: "Pixel", peerPlatform: "android" as const,
+      state: "offered" as const, reason: null, fileCount: 1, totalBytes: 2048, files: [{ name: "photo.jpg", size: 2048 }], doneBytes: 0, bytesPerSecond: null,
+      path: "relay" as const, link: "session" as const, prompt: { kind: "offer" as const, code: "123 456", trust: "new" as const }, folder: null, saved: false,
+      createdAt: Date.now(), finishedAt: null,
+    };
+    emit({ ...snapshot, drop: { ...snapshot.drop, available: true, loadedAt: Date.now(), devices: [{ deviceId: "phone", name: "Pixel", platform: "android", ready: true, supported: true }], transfers: [transfer] } });
+    const dialog = document.querySelector(".drop-dialog");
+    expect(dialog?.textContent).toContain("123 456");
+    expect(dialog?.textContent).toContain("photo.jpg");
+    button('[data-drop-answer="accept"]').click();
+    await Promise.resolve();
+    expect(bridge.answerDrop).toHaveBeenCalledWith(transfer.id, "accept", "123 456");
   });
 });
