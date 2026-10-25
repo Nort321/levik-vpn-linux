@@ -5,6 +5,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the release to users (otherwise it stays a draft)
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -76,6 +81,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: LevikVPN-Linux-${{ needs.build.outputs.version }}
@@ -86,14 +92,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
           COMMIT_SHA: ${{ github.sha }}
+          PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         run: |
           set -euo pipefail
           tag="v${VERSION}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk '/^## / {section++; next} section == 1 {print}' CHANGELOG.md > "$notes"
+          test -s "$notes"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" release/* --clobber
           else
             gh release create "$tag" release/* --target "$COMMIT_SHA" \
               --title "Levik VPN for Linux ${VERSION}" \
-              --notes "Automated Linux x64 build. Download AppImage or Debian package and verify SHA256SUMS.txt. See README for prerequisites and keyboard shortcuts." --draft
+              --notes-file "$notes" --draft
           fi
-          gh release edit "$tag" --draft=false --prerelease=false --latest
+          gh release edit "$tag" --notes-file "$notes"
+          if [ "$PUBLISH" = "true" ]; then
+            gh release edit "$tag" --draft=false --prerelease=false --latest
+          fi
