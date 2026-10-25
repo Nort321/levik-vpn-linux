@@ -1,3 +1,4 @@
+import { parseServiceRoutePolicy, type ServiceRoutePolicy } from "./serviceRoutes";
 import { createDecipheriv, createHash } from "node:crypto";
 import type { TunnelProfileEnvelope } from "../api/models";
 import { decodeBase64Url } from "../../shared/base64";
@@ -5,6 +6,7 @@ import type { TunnelServer } from "../../shared/contracts";
 import { DeviceIdentity } from "../security/deviceIdentity";
 
 export interface PreparedTunnelProfile {
+  serviceRoutes?: ServiceRoutePolicy;
   profileId: string;
   subscriptionId: string;
   subscriptionExpiresAt: string | null;
@@ -15,6 +17,7 @@ export interface PreparedTunnelProfile {
 }
 
 interface RawTunnelProfile {
+  serviceRoutes?: unknown;
   version: number;
   profileId: string;
   subscriptionId: string;
@@ -49,8 +52,8 @@ export function decryptTunnelProfile(identity: DeviceIdentity, envelope: TunnelP
  * What the account's rules change in a profile, docs/app-platform.md
  * "Account rules": a running tunnel restarts only when this differs.
  */
-export function ruleRoutingKey(profile: Pick<PreparedTunnelProfile, "directDomains" | "proxyDomains"> | null): string | null {
-  return profile ? JSON.stringify([profile.directDomains, profile.proxyDomains]) : null;
+export function ruleRoutingKey(profile: Pick<PreparedTunnelProfile, "directDomains" | "proxyDomains"> & Partial<Pick<PreparedTunnelProfile, "serviceRoutes">> | null): string | null {
+  return profile ? JSON.stringify([profile.directDomains, profile.proxyDomains, ...(profile.serviceRoutes ? [profile.serviceRoutes.fingerprint] : [])]) : null;
 }
 
 export function prepareTunnelProfile(plaintext: Uint8Array, expectedSubscriptionId: string): PreparedTunnelProfile {
@@ -61,7 +64,9 @@ export function prepareTunnelProfile(plaintext: Uint8Array, expectedSubscription
   if (!raw.source || typeof raw.source.content !== "string") throw new Error("Профиль не содержит конфигурацию");
   const servers = parseSource(raw.source.content);
   if (servers.length === 0 || servers.length > 200) throw new Error("В профиле нет совместимых серверов");
+  const serviceRoutes = parseServiceRoutePolicy(raw.serviceRoutes);
   return {
+    ...(serviceRoutes ? { serviceRoutes } : {}),
     profileId: raw.profileId,
     subscriptionId: raw.subscriptionId,
     subscriptionExpiresAt: raw.subscriptionExpiresAt ?? null,

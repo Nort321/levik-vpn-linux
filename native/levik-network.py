@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import selectors
 import shutil
 import signal
@@ -121,14 +122,35 @@ def validate_config(config):
     if not isinstance(config, dict) or len(json.dumps(config)) > 2_000_000:
         raise ValueError("Invalid VPN profile")
     inbounds = config.get("inbounds")
-    if not isinstance(inbounds, list) or len(inbounds) != 2:
+    routing = config.get("routing", {})
+    service_routes = any(isinstance(item, dict) and item.get("tag") == "levik-service-main"
+                         for item in routing.get("balancers", [])) if isinstance(routing, dict) else False
+    if service_routes:
+        api = config.get("api", {})
+        if not isinstance(api, dict) or api.get("tag") != "levik-api" or "listen" in api or set(api.get("services", [])) != {"StatsService", "RoutingService"}:
+            raise ValueError("Service API must use authenticated local ingress")
+    if not isinstance(inbounds, list) or not (2 <= len(inbounds) <= 35 if service_routes else len(inbounds) == 2):
         raise ValueError("Invalid VPN listeners")
     tun = next((item for item in inbounds if item.get("protocol") == "tun"), None)
     if not tun or tun.get("settings", {}).get("name") != TUN:
         raise ValueError("Invalid VPN interface")
+    ports = set()
     for item in inbounds:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid VPN listener")
         if item is not tun and (item.get("listen") != "127.0.0.1" or item.get("protocol") != "http"):
             raise ValueError("VPN listeners must be local")
+        if service_routes and item is not tun:
+            tag = item.get("tag", "")
+            port = item.get("port")
+            valid_port = isinstance(port, int) and ((tag == "levik-service-api-in" and port == 47187) or
+                         (tag == "levik-health" and port == 47186) or
+                         (re.fullmatch(r"levik-service-endpoint-[0-9]{1,2}-probe", tag) and 47200 <= port <= 47231))
+            settings = item.get("settings", {})
+            accounts = settings.get("accounts", []) if isinstance(settings, dict) else []
+            if not valid_port or port in ports or not isinstance(accounts, list) or len(accounts) != 1 or not isinstance(accounts[0], dict) or accounts[0].get("user") != "levik-service" or not re.fullmatch(r"[0-9a-f]{48}", str(accounts[0].get("pass", ""))):
+                raise ValueError("Invalid service route listener")
+            ports.add(port)
     dns = tun["settings"].get("dns", ["1.1.1.1"])
     if not isinstance(dns, list) or len(dns) != 1:
         raise ValueError("Invalid DNS server")
