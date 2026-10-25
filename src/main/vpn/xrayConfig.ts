@@ -1,3 +1,4 @@
+import { withServiceRoutes } from "./serviceRoutes";
 import { isIP } from "node:net";
 import type { AppSettings, TunnelServer } from "../../shared/contracts";
 import type { PreparedTunnelProfile } from "./tunnelProfile";
@@ -41,6 +42,9 @@ export function buildXrayConfig(
   const processes = resolveProcessCompanions(settings.splitTunnelProcesses);
   const processBypass = settings.splitTunnelMode === "bypass" && processes.length > 0;
 
+  const includedAppRule: Record<string, unknown> | undefined = settings.splitTunnelMode === "only" && processes.length
+    ? { type: "field", process: processes, network: "tcp,udp", outboundTag: server.tag } : undefined;
+
   const rules: Record<string, unknown>[] = [
     { type: "field", inboundTag: ["levik-dns"], outboundTag: server.tag },
     ...(settings.preventDnsLeaks ? [{ type: "field", port: "53,853", network: "tcp,udp", outboundTag: server.tag }] : []),
@@ -50,9 +54,7 @@ export function buildXrayConfig(
       ? [{ type: "field", process: processes, network: "tcp,udp", outboundTag: "direct", ruleTag: "process-bypass" }]
       : []),
     { type: "field", ip: LOCAL_CIDRS, outboundTag: "direct" },
-    ...(settings.splitTunnelMode === "only" && processes.length
-      ? [{ type: "field", process: processes, network: "tcp,udp", outboundTag: server.tag }]
-      : []),
+    ...(includedAppRule ? [includedAppRule] : []),
     ...(settings.splitTunnelMode === "only" ? [{ type: "field", network: "tcp,udp", outboundTag: "direct" }] : []),
     ...(proxyDomains.length ? [{ type: "field", domain: unique(proxyDomains), outboundTag: server.tag }] : []),
     ...(profile.directCidrs.length ? [{ type: "field", ip: profile.directCidrs, outboundTag: "direct" }] : []),
@@ -66,7 +68,7 @@ export function buildXrayConfig(
     rules.push({ type: "field", network: "tcp,udp", outboundTag: "direct" });
   }
 
-  return {
+  return withServiceRoutes({
     // Temporary bypass diagnostics: Xray emits ruleTag hits (including tcp:/udp:)
     // at info level. Keep ordinary connections at the existing warning level.
     log: { loglevel: "none" },
@@ -104,7 +106,10 @@ export function buildXrayConfig(
     routing: { domainStrategy: "IPIfNonMatch", domainMatcher: "hybrid", rules },
     policy: { system: { statsInboundDownlink: true, statsInboundUplink: true, statsOutboundDownlink: true, statsOutboundUplink: true } },
     stats: {},
-  };
+  }, { policy: profile.serviceRoutes, selected: server, servers: profile.servers,
+    automaticServer: settings.automaticServer,
+    ...(settings.splitTunnelMode === "only" ? { onlyProcesses: processes, insertionIndex: includedAppRule ? rules.indexOf(includedAppRule) : rules.length } : {}), directTag: "direct",
+    prepareOutbound: (candidate) => withEndpointResolution(withAntiDpi(candidate, settings)) });
 }
 
 function withAntiDpi(server: TunnelServer, settings: AppSettings): Record<string, unknown> {

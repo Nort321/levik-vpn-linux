@@ -1,3 +1,5 @@
+import { ServiceRouteSession } from "./serviceRouteSession";
+import type { ServiceRouteStatus } from "./serviceRoutes";
 import { app } from "electron";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
@@ -6,7 +8,8 @@ import { bindXrayOutboundInterface } from "./xrayConfig";
 import { findLinuxOutboundInterface } from "../linux/outboundInterface";
 import { networkHelper } from "../linux/networkHelper";
 
-export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code: number | null, expected: boolean]; stats: [downloadBytes: number, uploadBytes: number] }> {
+export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code: number | null, expected: boolean]; stats: [downloadBytes: number, uploadBytes: number]; serviceRoutes: [status: ServiceRouteStatus] }> {
+  readonly serviceRoutes = new ServiceRouteSession((status) => this.emit("serviceRoutes", status));
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
@@ -22,6 +25,8 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     this.outboundName = interfaceName;
     await networkHelper.request("start", { config: bindXrayOutboundInterface(config, interfaceName) });
     this.running = true;
+    try { await this.serviceRoutes.start(config); }
+    catch (error) { await this.stop(); throw error; }
     this.timer = setInterval(() => void this.queryStats(), 2000);
     this.emit("log", "Linux TUN подключён; сетевые настройки применены");
   }
@@ -30,6 +35,7 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     return app.isPackaged ? join(process.resourcesPath, "xray", "xray") : join(app.getAppPath(), "vendor", "xray", "linux-x64", "xray");
   }
   async stop(): Promise<void> {
+    this.serviceRoutes.stop();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     if (!this.running) return;
@@ -41,11 +47,12 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
   get outboundInterfaceName(): string | null { return this.outboundName; }
   async isHealthy(): Promise<boolean> {
     if (!this.running) return false;
-    try { await networkHelper.request("stats"); return this.running; }
+    try { if (this.serviceRoutes.active) await this.serviceRoutes.queryStats(); else await networkHelper.request("stats"); return this.running; }
     catch { return false; }
   }
   private exited(code: number | null): void {
     if (!this.running) return;
+    this.serviceRoutes.stop();
     this.running = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
@@ -55,6 +62,11 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     if (!this.running || this.polling) return;
     this.polling = true;
     try {
+      if (this.serviceRoutes.active) {
+        const stats = await this.serviceRoutes.queryStats();
+        if (this.running) this.emit("stats", stats.downlink, stats.uplink);
+        return;
+      }
       const result = await networkHelper.request("stats");
       if (typeof result !== "string") throw new Error("Invalid core statistics");
       const stats = parseXrayStats(result);

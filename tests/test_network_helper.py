@@ -52,6 +52,22 @@ class NetworkTests(unittest.TestCase):
         config["inbounds"][0]["settings"]["dns"] = ["1.1.1.1; reboot"]
         with self.assertRaises(ValueError): helper.validate_config(config)
 
+    def test_service_routes_require_authenticated_bounded_ingress(self):
+        config = self.config()
+        settings = {"accounts": [{"user": "levik-service", "pass": "a" * 48}]}
+        config["inbounds"][1].update({"tag": "levik-health", "port": 47186, "settings": settings})
+        config["routing"] = {"balancers": [{"tag": "levik-service-main"}]}
+        config["api"] = {"tag": "levik-api", "services": ["StatsService", "RoutingService"]}
+        config["inbounds"].append({"tag": "levik-service-api-in", "listen": "127.0.0.1", "port": 47187,
+                                    "protocol": "http", "settings": settings})
+        self.assertEqual(helper.validate_config(config), "1.1.1.1")
+        for changed in ({"listen": "0.0.0.0"}, {"port": 80}, {"settings": {}}, {"tag": "unowned-proxy"}):
+            candidate = json.loads(json.dumps(config))
+            candidate["inbounds"][-1].update(changed)
+            with self.assertRaises(ValueError): helper.validate_config(candidate)
+        config["api"]["listen"] = "127.0.0.1:47185"
+        with self.assertRaises(ValueError): helper.validate_config(config)
+
     @patch.object(helper, "run")
     @patch.object(helper, "nft_exists", return_value=True)
     def test_firewall_refresh_is_one_atomic_transaction(self, exists, run):
