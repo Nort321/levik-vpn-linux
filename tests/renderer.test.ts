@@ -185,11 +185,15 @@ describe("Rendered desktop integration", () => {
       createdAt: Date.now(), finishedAt: null,
     };
     emit({ ...snapshot, drop: { ...snapshot.drop, available: true, loadedAt: Date.now(), devices: [{ deviceId: "phone", name: "Pixel", platform: "android", ready: true, supported: true }], transfers: [transfer] } });
-    const dialog = document.querySelector(".drop-dialog");
-    expect(dialog?.textContent).toContain("123 456");
-    expect(dialog?.textContent).toContain("photo.jpg");
-    button('[data-drop-answer="accept"]').click();
+    const card = document.querySelector('.drop-dock [data-dock-id="11111111-2222-4333-8444-555555555555"]');
+    expect(card?.querySelector(".dock-code")?.getAttribute("aria-label")).toBe("Код 123 456");
+    expect(card?.textContent).toContain("photo.jpg");
+    button('.drop-dock [data-dock-action="accept"]').click();
     await Promise.resolve();
     expect(bridge.answerDrop).toHaveBeenCalledWith(transfer.id, "accept", "123 456");
+    // Once received, the same card says so; files the window never saw open get none.
+    emit({ ...snapshot, drop: { ...snapshot.drop, available: true, loadedAt: Date.now(), devices: [], transfers: [{ ...transfer, state: "done", prompt: null, doneBytes: 2048, finishedAt: Date.now() }, { ...transfer, id: "old", state: "done", prompt: null }] } });
+    expect(document.querySelector('.drop-dock [data-dock-id="11111111-2222-4333-8444-555555555555"]')?.textContent).toContain("Получено");
+    expect(document.querySelector('.drop-dock [data-dock-id="old"]')).toBeNull();
   });
 });
