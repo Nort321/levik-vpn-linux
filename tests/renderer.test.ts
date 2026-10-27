@@ -21,7 +21,7 @@ const bridge: LevikDesktopApi = {
   snapshot: async () => structuredClone(snapshot), onSnapshot: (listener) => { emit = listener; return () => {}; },
   login: async () => ({ verificationUri: "https://leviknet.com", verificationCode: null, expiresAt: "", matchNumber: 37, telegramUri: null, approvalRequested: true }),
   answerApproval: vi.fn(async () => "approved" as const),
-  cancelLogin: noop, logout: noop, refreshAccount: noop, selectSubscription: noop, selectServer: vi.fn(async () => {}), selectCountry: vi.fn(async () => {}),
+  cancelLogin: noop, logout: noop, refreshAccount: noop, selectSubscription: noop, selectServer: vi.fn(async () => {}), selectCountry: vi.fn(async () => {}), selectAutomatic: vi.fn(async () => {}),
   connect: noop, disconnect: noop, updateSettings: vi.fn(async () => {}), openExternal: noop,
   listProcesses: async () => [{ name: "firefox", path: "/usr/bin/firefox", running: true }, { name: "code", path: "/usr/bin/code", running: true }],
   selectExecutable: async () => null, pingServers: noop, revokeDevice: noop, setSubscriptionShield: noop,
@@ -139,6 +139,29 @@ describe("Rendered desktop integration", () => {
     expect(document.querySelector('[data-server-id="de"] .server-maintenance')?.textContent).toBe("Обслуживание до 14:30");
     expect(button('[data-server-id="de"]').getAttribute("aria-label")).toContain("обслуживание до 14:30");
     expect(document.querySelector('[data-server-id="nl"] .server-maintenance')).toBeNull();
+  });
+  it("offers Automatic first in the list and on the home screen instead of a settings switch", () => {
+    emit({ ...snapshot, settings: { ...snapshot.settings, automaticServer: true }, selectedServerId: "de" });
+    button('[data-tab="servers"]').click();
+    const auto = button("#auto-server-button");
+    expect(document.querySelector(".server-list > .server-card")?.contains(auto)).toBe(true);
+    expect(auto.getAttribute("aria-pressed")).toBe("true");
+    expect(auto.textContent).toContain("Сейчас: ");
+    // While Smart Auto chooses, no single server is marked as picked by hand.
+    expect(button('[data-server-id="de"]').getAttribute("aria-pressed")).toBe("false");
+    emit({ ...snapshot, settings: { ...snapshot.settings, automaticServer: false }, selectedServerId: "de" });
+    expect(button("#auto-server-button").getAttribute("aria-pressed")).toBe("false");
+    expect(button('[data-server-id="de"]').getAttribute("aria-pressed")).toBe("true");
+    button("#auto-server-button").click();
+    expect(bridge.selectAutomatic).toHaveBeenCalledTimes(1);
+    button('[data-tab="home"]').click();
+    const select = document.querySelector<HTMLSelectElement>("#home-server-select")!;
+    expect(select.options[0]?.value).toBe("auto");
+    select.value = "auto";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(bridge.selectAutomatic).toHaveBeenCalledTimes(2);
+    button('[data-tab="profile"]').click();
+    expect(document.querySelector('[data-setting="automaticServer"]')).toBeNull();
   });
   it("shows the servers of one country under one card", () => {
     const at = (id: string, name: string, address: string, protocol = "vless") => ({ id, tag: id, name, countryCode: "DE", outbound: { protocol, settings: { vnext: [{ address }] } } });
