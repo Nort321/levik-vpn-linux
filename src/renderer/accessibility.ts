@@ -1,5 +1,5 @@
 const CONTROL = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]';
-const KEYS = ["id", "data-tab", "data-server-id", "data-favorite-server-id", "data-setting", "data-process-name", "data-subscription-id", "data-devices-subscription-id", "data-revoke-device-id", "data-shield-subscription-id", "data-renew-subscription-id", "data-remote-device-id", "data-remote-command", "data-remote-note"];
+const KEYS = ["id", "data-tab", "data-server-id", "data-country-code", "data-country-toggle", "data-favorite-server-id", "data-setting", "data-process-name", "data-subscription-id", "data-devices-subscription-id", "data-revoke-device-id", "data-shield-subscription-id", "data-renew-subscription-id", "data-remote-device-id", "data-remote-command", "data-remote-note"];
 function key(node: Node): string | null {
   if (!(node instanceof Element)) return null;
   for (const attribute of KEYS) {

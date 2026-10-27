@@ -21,7 +21,7 @@ const bridge: LevikDesktopApi = {
   snapshot: async () => structuredClone(snapshot), onSnapshot: (listener) => { emit = listener; return () => {}; },
   login: async () => ({ verificationUri: "https://leviknet.com", verificationCode: null, expiresAt: "", matchNumber: 37, telegramUri: null, approvalRequested: true }),
   answerApproval: vi.fn(async () => "approved" as const),
-  cancelLogin: noop, logout: noop, refreshAccount: noop, selectSubscription: noop, selectServer: vi.fn(async () => {}),
+  cancelLogin: noop, logout: noop, refreshAccount: noop, selectSubscription: noop, selectServer: vi.fn(async () => {}), selectCountry: vi.fn(async () => {}),
   connect: noop, disconnect: noop, updateSettings: vi.fn(async () => {}), openExternal: noop,
   listProcesses: async () => [{ name: "firefox", path: "/usr/bin/firefox", running: true }, { name: "code", path: "/usr/bin/code", running: true }],
   selectExecutable: async () => null, pingServers: noop, revokeDevice: noop, setSubscriptionShield: noop,
@@ -139,6 +139,27 @@ describe("Rendered desktop integration", () => {
     expect(document.querySelector('[data-server-id="de"] .server-maintenance')?.textContent).toBe("Обслуживание до 14:30");
     expect(button('[data-server-id="de"]').getAttribute("aria-label")).toContain("обслуживание до 14:30");
     expect(document.querySelector('[data-server-id="nl"] .server-maintenance')).toBeNull();
+  });
+  it("shows the servers of one country under one card", () => {
+    const at = (id: string, name: string, address: string, protocol = "vless") => ({ id, tag: id, name, countryCode: "DE", outbound: { protocol, settings: { vnext: [{ address }] } } });
+    emit({
+      ...snapshot,
+      selectedServerId: "nl",
+      servers: [at("fra", "🇩🇪 Германия · Франкфурт", "fra.example.net"), at("fra-hy2", "🇩🇪 Германия · Франкфурт", "fra.example.net", "hysteria2"), at("nue", "🇩🇪 Германия · Нюрнберг", "nue.example.net"), snapshot.servers[1]!],
+      serverLatencies: { fra: 34, nue: 51 },
+    });
+    button('[data-tab="servers"]').click();
+    const country = button('[data-country-code="DE"]');
+    expect(country.textContent).toContain("2 сервера · от 34 мс");
+    const toggle = button('[data-country-toggle="DE"]');
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    toggle.click();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById("country-servers-DE")?.hidden).toBe(false);
+    expect(button('#country-servers-DE [data-server-id="nue"]').getAttribute("aria-label")).toBe("Выбрать Германия, Нюрнберг");
+    expect(document.querySelectorAll('#country-servers-DE .protocol-option')).toHaveLength(2);
+    country.click();
+    expect(bridge.selectCountry).toHaveBeenCalledWith("DE");
   });
   it("sends remote commands to another app once, waits for the answer and opens its diagnostics", () => {
     const phone = { deviceId: "phone", name: "<i>Pixel</i>", platform: "android" as const, appVersion: "2.7.30", current: false, remote: true, online: true, vpnConnected: true, country: "DE" };
