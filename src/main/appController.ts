@@ -1,6 +1,6 @@
 import { ServiceRouteState } from "./vpn/serviceRouteState";
 import { validateServiceRouteConfig } from "./vpn/serviceRouteTransport";
-import { parseServiceRoutePolicy, serviceExitForServer, serviceServerKey, compiledServiceRoutes, type ServiceRouteStatus } from "./vpn/serviceRoutes";
+import { parseServiceRoutePolicy, serviceExitForServer, serviceServerKey, compiledServiceRoutes, rememberAutomaticMain, type ServiceRouteStatus } from "./vpn/serviceRoutes";
 import { app, net } from "electron";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -60,6 +60,7 @@ import {
 } from "./vpn/smartAuto";
 import { measureServerLatencies, extractServerEndpoint } from "./vpn/serverPinger";
 import { measureRouteCandidates, measuredRouteUsable, type RouteMeasurement, type RouteProbeCandidate } from "./vpn/routeProbe";
+import type { LiveAutoUpdate } from "./vpn/smartAutoLiveRuntime";
 import { DnsLeakProtection } from "./linux/dnsLeakProtection";
 import { LinuxKillSwitch } from "./linux/killSwitch";
 import { AppUpdater } from "./update/appUpdater";
@@ -372,6 +373,19 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   constructor() {
     super();
+    this.xray.serviceRoutes.configureSmartAuto({
+      controls: () => Object.fromEntries(this.state.servers.map((server) => {
+        const now = Date.now(), resource = this.routeResource(server, now);
+        const exit = this.profile?.serviceRoutes ? serviceExitForServer(this.profile.serviceRoutes, server) : null;
+        return [server.id, { eligible: !isHomeRoadServer(server.name) && (!exit || exit.state === "enabled")
+          && !maintenanceFor(this.maintenanceWindows(), nodeIdForServer(server), now),
+          state: resource?.state ?? "unknown", resourceHeadroom: resource?.resourceHeadroom ?? null,
+          ...(resource?.id ? { routeId: resource.id } : {}) }];
+      })),
+      canTransfer: () => this.state.settings.automaticServer && this.state.status === "connected",
+      networkKey: () => this.protocolHistory.networkKey(),
+      report: (update) => this.smartAutoLiveChanged(update),
+    });
     this.homeRoad.on("status", (status, detail) => {
       if (status === "error" && detail) this.addLog(`Дорога домой: ${detail}`);
       this.patch({ homeRoad: this.homeRoadSnapshot() });
@@ -637,6 +651,11 @@ export class AppController extends EventEmitter<AppControllerEvents> {
    */
   async selectAutomatic(): Promise<void> {
     if (!this.state.settings.automaticServer) await this.updateSettings({ automaticServer: true });
+    if (this.xray.isRunning() && this.xray.serviceRoutes?.automaticAvailable) {
+      await this.refreshLiveLoad(15_000);
+      await this.xray.serviceRoutes.refreshAutomatic();
+      return;
+    }
     await Promise.all([this.refreshLiveLoad(), this.pingServers()]);
     const best = this.bestServer(this.state.servers);
     if (best && best.id !== this.state.selectedServerId) await this.selectServer(best.id);
@@ -718,7 +737,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       await this.startXray(config, generation);
       this.recordNetwork();
       progress.reach("verify", "timeout");
-      const healthy = this.xray.serviceRoutes?.active ? await this.xray.isHealthy() : await isTunnelHealthy({ onFailure: (codes) => progress.reach("verify", codes[0] ?? "other") });
+      const healthy = this.xray.serviceRoutes?.authentication ? await this.xray.isHealthy() : await isTunnelHealthy({ onFailure: (codes) => progress.reach("verify", codes[0] ?? "other") });
       verifyFailed = !healthy;
       if (!healthy) throw new Error("VPN-сервер не передаёт трафик. Выберите другой сервер или повторите подключение.");
       this.assertCurrentConnection(generation);
@@ -831,6 +850,11 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     const reconnect = this.connectionRequested() && affectsTunnel(previous, next);
     const generation = this.connectionGeneration;
     this.state.settings = next;
+    if (previous.automaticServer !== next.automaticServer) {
+      await this.xray.serviceRoutes?.setAutomaticEnabled?.(next.automaticServer);
+      const installed = this.xray.serviceRoutes?.mainServerId;
+      if (installed) rememberAutomaticMain(this.lastConfig, installed, next.automaticServer);
+    }
     await this.secureStore.put("settings", Buffer.from(JSON.stringify(serializeSettings(next))));
     this.applyLoginItemSettings();
     this.emitChanged();
@@ -1352,6 +1376,8 @@ export class AppController extends EventEmitter<AppControllerEvents> {
    */
   private activeMainServer(): TunnelServer | null {
     if (!this.xray.serviceRoutes?.active) return this.selectedServer();
+    const automaticId = this.xray.serviceRoutes.mainServerId;
+    if (automaticId) return this.state.servers.find((server) => server.id === automaticId) ?? null;
     const exitId = this.xray.serviceRoutes.mainExitId;
     const pending = this.profile ? this.serviceRouteState.pending(this.profile.subscriptionId) : undefined;
     const policy = pending?.fingerprint === this.xray.serviceRoutes?.snapshot?.fingerprint ? pending : this.profile?.serviceRoutes;
@@ -1361,6 +1387,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   private serviceConnectionDetail(server: TunnelServer | null): string {
     if (!this.xray.serviceRoutes?.active) return `Защищено через ${server?.name ?? "VPN"}`;
     const actual = this.activeMainServer();
+    if (this.xray.serviceRoutes.smartAutoActive && !this.xray.serviceRoutes.policyActive) return `Защищено через ${actual?.name ?? server?.name ?? "VPN"}`;
     return actual ? `Основной VPN: ${actual.name}. Сервисные маршруты применяются отдельно.`
       : "Основной выход недоступен. Состояние отдельных маршрутов — в «Моих правилах».";
   }
@@ -2163,7 +2190,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
           await this.startXray(this.lastConfig, generation);
           this.recordNetwork();
           progress?.reach("verify", "timeout");
-          const healthy = this.xray.serviceRoutes?.active ? await this.xray.isHealthy() : await isTunnelHealthy({ onFailure: (codes) => progress?.reach("verify", codes[0] ?? "other") });
+          const healthy = this.xray.serviceRoutes?.authentication ? await this.xray.isHealthy() : await isTunnelHealthy({ onFailure: (codes) => progress?.reach("verify", codes[0] ?? "other") });
           if (!healthy) throw new Error("VPN-сервер не передаёт трафик");
           this.assertCurrentConnection(generation);
           this.reconnectAttempts = 0;
@@ -2190,13 +2217,19 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.tunnelHealthCheckRunning = true;
     try {
       let codes = ["no_vpn_network"];
-      const healthy = await this.xray.isHealthy() && (this.xray.serviceRoutes?.active || await isTunnelHealthy({ onFailure: (failures) => { codes = failures; } }));
+      const healthy = await this.xray.isHealthy() && (this.xray.serviceRoutes?.authentication || await isTunnelHealthy({ onFailure: (failures) => { codes = failures; } }));
       if (generation !== this.connectionGeneration || this.state.status !== "connected") return;
       this.tunnelHealthFailures = healthy ? 0 : this.tunnelHealthFailures + 1;
       this.telemetry.record((session) => {
         if (healthy) session.probeSucceeded();
         else session.probeFailed(codes);
       });
+      if (!healthy && this.xray.serviceRoutes?.smartAutoActive && this.xray.isRunning()) {
+        this.tunnelHealthFailures = 0;
+        this.patch({ statusDetail: "Smart Auto временно недоступен. Текущее подключение сохранено." });
+        void this.xray.serviceRoutes.refreshAutomatic();
+        return;
+      }
       if (!healthy && (immediate || this.tunnelHealthFailures >= 3)) {
         this.recoveryReason = "probe";
         this.beginTunnelRecovery("VPN-сервер перестал передавать трафик. Восстановление…", cause);
@@ -2396,6 +2429,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
    * user does is cut, and at most every half hour.
    */
   private async checkOverload(current: TunnelServer, now: number): Promise<void> {
+    if (this.xray.serviceRoutes?.smartAutoActive) return;
     if (this.overloadMoving || !this.state.settings.automaticServer || isHomeRoadServer(current.name)) return;
     const since = this.fullSince.get(current.id) ?? null;
     if (since === null) return;
@@ -2462,6 +2496,13 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     const current = this.selectedServer();
     if (!current) return;
     const move = maintenanceMove(maintenanceFor(this.maintenanceWindows(), nodeIdForServer(current), now), now);
+    if (this.xray.serviceRoutes?.smartAutoActive) {
+      if (now >= this.nextConnectedLoadAt) {
+        this.nextConnectedLoadAt = now + LIVE_LOAD_CONNECTED_EVERY_MS / 2 + Math.floor(Math.random() * 5_000);
+        void this.refreshLiveLoad(0, 0);
+      }
+      return;
+    }
     if (move === "stay") {
       if (this.state.settings.automaticServer) {
         // Spread polling across installs; the 15s maintenance tick bounds the
@@ -2575,6 +2616,32 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.routeMeasurements = {}; this.routeMeasurementKeys = {}; this.routeMeasurementNetwork = null;
   }
 
+  private routeProbeSource(server: TunnelServer): Record<string, unknown> {
+    const profile = { ...this.serviceProfileFor(server) }; delete profile.serviceRoutes;
+    return buildXrayConfig(profile, server, { ...this.state.settings, automaticServer: false });
+  }
+
+  private smartAutoLiveChanged(update: LiveAutoUpdate): void {
+    if (!this.xray.serviceRoutes?.automaticAvailable || !this.xray.isRunning()) return;
+    const server = this.state.servers.find((candidate) => candidate.id === update.currentId);
+    if (!server) return;
+    this.routeMeasurementNetwork = this.protocolHistory.networkKey();
+    for (const [id, measurement] of Object.entries(update.measurements)) {
+      const candidate = this.state.servers.find((item) => item.id === id);
+      if (!candidate) continue;
+      this.routeMeasurements[id] = measurement; this.routeMeasurementKeys[id] = this.routeMeasurementKey(candidate);
+    }
+    rememberAutomaticMain(this.lastConfig, server.id, this.state.settings.automaticServer);
+    const changed = update.switched && this.state.selectedServerId !== server.id;
+    if (changed) {
+      this.state.selectedServerId = server.id;
+      void this.secureStore.put("selected_server", Buffer.from(server.id)).catch(() => {});
+      this.addLog(`Smart Auto: новые соединения направлены через ${server.name}`);
+    }
+    this.patch({ serverLatencies: this.displayedRouteLatencies(this.endpointLatencies),
+      ...(this.state.status === "connected" ? { statusDetail: this.serviceConnectionDetail(server) } : {}) });
+  }
+
   private routeResource(server: TunnelServer, now: number) {
     const endpoint = serverSyncEndpoint(server);
     return currentRouteResource(this.liveLoad, endpoint ? [
@@ -2627,7 +2694,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       keys[server.id] = this.routeMeasurementKey(server);
       try {
         candidates.push({ id: server.id, routeKey: keys[server.id]!, tag: server.tag,
-          config: buildXrayConfig(this.serviceProfileFor(server), server, this.state.settings),
+          config: this.routeProbeSource(server),
           path: resource?.path ?? [nodeIdForHost(endpoint.host)!],
           ...(resource?.path.at(-1) ? { exitId: resource.path.at(-1)! } : {}),
         });
@@ -2709,6 +2776,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private launchTrafficCheck(delayMs: number): void {
+    if (this.xray.serviceRoutes?.smartAutoActive) { void this.xray.serviceRoutes.refreshAutomatic(true); return; }
     if (this.xray.serviceRoutes?.active) return;
     const server = this.selectedServer();
     if (!server || !this.state.settings.automaticServer || this.trafficCheck || isHomeRoadServer(server.name)) return;
@@ -2750,6 +2818,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   /** The next rung: the best server of a protocol not tried yet, a few moves at most. */
   private async climbProtocolLadder(failed: TunnelServer, protocol: string): Promise<void> {
+    if (this.xray.serviceRoutes?.smartAutoActive) { await this.xray.serviceRoutes.refreshAutomatic(); return; }
     this.smartLadder.tried(failed.id, protocol);
     if (this.smartLadder.exhausted()) {
       this.addLog("Smart Auto: проверены несколько протоколов, остаёмся на текущем сервере");
@@ -2813,6 +2882,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private recordConnected(): void {
+    void this.xray.serviceRoutes?.setAutomaticEnabled?.(this.state.settings.automaticServer).catch(() => {});
     this.telemetry.record((session) => session.connected());
     // Reports leave through the working tunnel, after it has settled.
     this.telemetry.flushSoon();

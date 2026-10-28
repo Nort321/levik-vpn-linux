@@ -47,7 +47,14 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
   get outboundInterfaceName(): string | null { return this.outboundName; }
   async isHealthy(): Promise<boolean> {
     if (!this.running) return false;
-    try { if (this.serviceRoutes.active) await this.serviceRoutes.queryStats(); else await networkHelper.request("stats"); return this.running; }
+    try {
+      if (this.serviceRoutes.authentication) {
+        if (this.serviceRoutes.active) await this.serviceRoutes.queryStats();
+        const healthy = this.serviceRoutes.active || await this.serviceRoutes.probeCurrent();
+        return this.running && healthy;
+      }
+      await networkHelper.request("stats"); return this.running;
+    }
     catch { return false; }
   }
   private exited(code: number | null): void {
@@ -62,7 +69,7 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     if (!this.running || this.polling) return;
     this.polling = true;
     try {
-      if (this.serviceRoutes.active) {
+      if (this.serviceRoutes.authentication) {
         const stats = await this.serviceRoutes.queryStats();
         if (this.running) this.emit("stats", stats.downlink, stats.uplink);
         return;
