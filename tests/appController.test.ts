@@ -192,7 +192,10 @@ describe("AppController login lifecycle", () => {
 });
 
 vi.mock("../src/main/vpn/tunnelHealth", () => ({ isTunnelHealthy: vi.fn(), TUNNEL_HEALTH_TAG: "levik-health", TUNNEL_HEALTH_PORT: 47186 }));
-vi.mock("../src/main/vpn/serverPinger", () => ({ measureServerLatencies: vi.fn() }));
+vi.mock("../src/main/vpn/serverPinger", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/main/vpn/serverPinger")>(),
+  measureServerLatencies: vi.fn(),
+}));
 
 import { isTunnelHealthy } from "../src/main/vpn/tunnelHealth";
 import { measureServerLatencies } from "../src/main/vpn/serverPinger";
@@ -337,6 +340,49 @@ describe("AppController tunnel recovery", () => {
     expect(xray.isRunning()).toBe(false);
     expect(killSwitch.disable).toHaveBeenCalledOnce();
     expect(controller.snapshot().status).toBe("error");
+  });
+
+  it("an automatic connection tries the next server when one does not carry traffic", async () => {
+    const { controller, xray, second } = tunnelController();
+    const update = vi.fn(async () => undefined);
+    Reflect.set(controller, "protocolHistory", {
+      networkKey: () => "0123456789abcdef", current: () => ({ networks: [], winners: {} }), localSalt: () => "salt", update,
+    });
+    Reflect.set(controller, "latenciesMeasuredAt", Date.now());
+    vi.mocked(isTunnelHealthy).mockResolvedValueOnce(false);
+
+    await controller.connect();
+
+    expect(xray.start).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenCalledOnce();
+    expect(controller.snapshot()).toMatchObject({ status: "connected", selectedServerId: second.id });
+  });
+
+  it("keeps a server chosen by hand and stays put without a network of its own", async () => {
+    const { controller, xray } = tunnelController();
+    Reflect.set(controller, "protocolHistory", {
+      networkKey: () => null, current: () => ({ networks: [], winners: {} }), localSalt: () => "salt", update: vi.fn(),
+    });
+    Reflect.set(controller, "latenciesMeasuredAt", Date.now());
+    vi.mocked(isTunnelHealthy).mockResolvedValue(false);
+    await expect(controller.connect()).rejects.toThrow("не передаёт трафик");
+    expect(xray.start).toHaveBeenCalledOnce();
+
+    Reflect.set(controller, "protocolHistory", {
+      networkKey: () => "0123456789abcdef", current: () => ({ networks: [], winners: {} }), localSalt: () => "salt", update: vi.fn(),
+    });
+    await controller.updateSettings({ automaticServer: false });
+    await expect(controller.connect()).rejects.toThrow("не передаёт трафик");
+    expect(xray.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the last direct pings while the tunnel would answer them itself", async () => {
+    const { controller, first, second } = tunnelController();
+    await controller.connect();
+    vi.mocked(measureServerLatencies).mockClear();
+    await controller.pingServers();
+    expect(measureServerLatencies).not.toHaveBeenCalled();
+    expect(controller.snapshot().serverLatencies).toEqual({ [first.id]: 10, [second.id]: 20 });
   });
 
   it("restores directly to a real VPN and keeps nftables enabled throughout", async () => {
