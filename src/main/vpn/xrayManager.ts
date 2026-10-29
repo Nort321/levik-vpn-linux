@@ -1,3 +1,4 @@
+import { guestInterface } from "./guestSession";
 import { ServiceRouteSession } from "./serviceRouteSession";
 import type { ServiceRouteStatus } from "./serviceRoutes";
 import { app } from "electron";
@@ -19,9 +20,9 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     networkHelper.on("exit", (code) => this.exited(code));
     networkHelper.on("lost", () => this.exited(null));
   }
-  async start(config: Record<string, unknown>): Promise<void> {
+  async start(config: Record<string, unknown>, guestHost?: string): Promise<void> {
     await this.stop();
-    const interfaceName = await findLinuxOutboundInterface();
+    const interfaceName = guestHost ? guestInterface(guestHost) : await findLinuxOutboundInterface();
     this.outboundName = interfaceName;
     await networkHelper.request("start", { config: bindXrayOutboundInterface(config, interfaceName) });
     this.running = true;

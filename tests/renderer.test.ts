@@ -18,6 +18,7 @@ const snapshot: AppSnapshot = {
 let emit: (value: AppSnapshot) => void = () => {};
 const noop = vi.fn(async () => {});
 const bridge: LevikDesktopApi = {
+  connectGuest: vi.fn(async () => {}), disconnectGuest: vi.fn(async () => {}), importGuestInvite: vi.fn(async () => {}),
   snapshot: async () => structuredClone(snapshot), onSnapshot: (listener) => { emit = listener; return () => {}; },
   login: async () => ({ verificationUri: "https://leviknet.com", verificationCode: null, expiresAt: "", matchNumber: 37, telegramUri: null, approvalRequested: true }),
   answerApproval: vi.fn(async () => "approved" as const),

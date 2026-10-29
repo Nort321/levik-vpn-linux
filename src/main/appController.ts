@@ -1,3 +1,5 @@
+import { GuestConnection } from "./vpn/guestConnection";
+import { guestInterface, parseGuestInvitation } from "./vpn/guestSession";
 import { ServiceRouteState } from "./vpn/serviceRouteState";
 import { validateServiceRouteConfig } from "./vpn/serviceRouteTransport";
 import { parseServiceRoutePolicy, serviceExitForServer, serviceServerKey, compiledServiceRoutes, rememberAutomaticMain, type ServiceRouteStatus } from "./vpn/serviceRoutes";
@@ -221,6 +223,26 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   private readonly xray = new XrayManager();
   private readonly dnsLeakProtection = new DnsLeakProtection();
   private readonly killSwitch = new LinuxKillSwitch();
+  private normalStopTail: Promise<void> = Promise.resolve();
+  private readonly guestConnection = new GuestConnection({
+    interfaceFor: (host) => { guestInterface(host); return host; },
+    enableProtection: async () => { await this.normalStopTail; await this.homeRoad.stop(); await this.killSwitch.enable(); await this.dnsLeakProtection.enable(); },
+    protectionActive: () => this.killSwitch.isActive(),
+    start: async (config, host, current) => {
+      if (!current()) return;
+      await this.xray.start(config, host);
+      if (!current()) await this.xray.stop();
+    },
+    allowTunnel: () => this.killSwitch.allowTunnel(),
+    healthy: () => this.xray.isHealthy().then(async (running) => running && await isTunnelHealthy()),
+    stop: () => this.xray.stop(),
+    releaseProtection: async () => { await this.releaseProtection(); },
+    changed: (guest, detail) => {
+      this.patch({ guest, status: !guest ? "disconnected" : guest.phase === "connecting" ? "connecting" : guest.phase === "connected" ? "connected" : "error",
+        statusDetail: detail, busy: guest?.phase === "connecting",
+        sessionStartedAt: guest?.phase === "connected" ? Date.now() : null });
+    },
+  });
   private readonly homeRoad = new HomeRoadExit({
     xrayPath: () => this.xray.executablePath(),
     log: (line) => this.diskLog?.write(line),
@@ -514,6 +536,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   async beginLogin(): Promise<LoginChallenge> {
+    if (this.guestConnection.active) throw new Error("Сначала завершите гостевой режим.");
     if (this.state.busy) throw new Error("Дождитесь завершения текущей операции");
     let generation = this.loginGeneration;
     this.patch({ busy: true, statusDetail: null });
@@ -572,6 +595,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   async refreshAccount(): Promise<void> {
+    if (this.guestConnection.active) return;
     this.patch({ busy: true });
     try {
       const response = await this.withSession((token) => this.api.account(token));
@@ -593,6 +617,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   async selectSubscription(subscriptionId: string): Promise<void> {
+    if (this.guestConnection.active) throw new Error("Сначала завершите гостевой режим.");
     if (this.routeProbeAbort) this.cancelRouteProbes();
     if (!this.state.account?.subscriptions.some((item) => item.uuid === subscriptionId)) {
       throw new Error("Подписка не найдена");
@@ -613,6 +638,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   async selectServer(serverId: string): Promise<void> {
+    if (this.guestConnection.active) throw new Error("Сначала завершите гостевой режим.");
     if (this.routeProbeAbort) this.cancelRouteProbes();
     const server = this.state.servers.find((item) => item.id === serverId);
     if (!server) throw new Error("Сервер не найден");
@@ -674,7 +700,34 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     if (best) await this.selectServer(best.id);
   }
 
+  async connectGuest(raw: string): Promise<void> {
+    if (this.state.busy || this.xray.isRunning() || this.killSwitch.isActive()
+      || !["disconnected", "error"].includes(this.state.status)) {
+      throw new Error("Сначала отключите текущее VPN-подключение, затем подключитесь через телефон.");
+    }
+    const invitation = parseGuestInvitation(raw);
+    guestInterface(invitation.host);
+    this.cancelLogin();
+    this.cancelRouteProbes();
+    this.cancelTunnelRecovery();
+    this.lastConfig = null;
+
+    this.trafficCheck = null;
+    this.resetTrafficStats();
+    await this.guestConnection.connect(invitation);
+  }
+
+  async disconnectGuest(restoreServices = true): Promise<void> {
+    if (!this.guestConnection.active) return;
+    await this.guestConnection.disconnect();
+    this.lastConfig = null;
+
+    this.resetTrafficStats();
+    if (restoreServices && this.accessToken) this.refreshHomeRoadSoon();
+  }
+
   async connect(trigger: SessionTrigger = "user"): Promise<void> {
+    if (this.guestConnection.active) { if (trigger === "user") await this.guestConnection.retry(); return; }
     if (this.xray.isRunning() || this.state.status === "connecting") return;
     const intent = ++this.connectionIntent;
     // Connecting by hand at home: the VPN stays on until the next arrival.
@@ -805,12 +858,22 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   disconnect(): Promise<void> {
+    if (this.guestConnection.active) return this.disconnectGuest();
     this.cancelRouteProbes();
     this.smartLadder.reset();
     return this.stopConnection("user", "user");
   }
 
   private stopConnection(by: EndBy, code: string | null): Promise<void> {
+    if (this.guestConnection.active) {
+      return by === "user" || by === "system" && code !== "home" ? this.disconnectGuest(by === "user") : Promise.resolve();
+    }
+    const pending = this.normalStopTail.then(() => this.stopNormalConnection(by, code));
+    this.normalStopTail = pending.catch(() => {});
+    return pending;
+  }
+
+  private stopNormalConnection(by: EndBy, code: string | null): Promise<void> {
     this.cancelRouteProbes();
     void this.telemetry.finish(by, code);
     this.cancelTunnelRecovery();
@@ -844,6 +907,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   /** Settings changed here ("user") or by another device of the account ("sync"). */
   async updateSettings(patch: Partial<AppSettings>, origin: "user" | "sync" = "user"): Promise<void> {
+    if (this.guestConnection.active) { if (origin === "sync") return; throw new Error("Настройки обычного VPN доступны после завершения гостевого режима."); }
     this.invalidateRouteMeasurements();
     const previous = this.state.settings;
     const next = validateSettings({ ...previous, ...patch });
@@ -866,6 +930,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     if (telemetryAllowed(previous) !== telemetryAllowed(next)) await this.telemetry.setEnabled(telemetryAllowed(next));
     this.telemetry.record((session) => session.updateSettings(sessionSettings(next)));
     if (!previous.automaticServer && next.automaticServer) void this.pingServers();
+    if (this.guestConnection.active) return;
     if (previous.killSwitch && !next.killSwitch) await this.killSwitch.disable();
     if (previous.preventDnsLeaks && !next.preventDnsLeaks) await this.dnsLeakProtection.disable();
     if (reconnect && generation === this.connectionGeneration) {
@@ -875,6 +940,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   async shutdown(reason: "quit" | "app_update" = "quit"): Promise<void> {
+    if (this.guestConnection.active) await this.disconnectGuest(false);
     this.cancelRouteProbes();
     if (this.serviceRoutesRetry) clearTimeout(this.serviceRoutesRetry);
     this.serviceRoutesRetry = null;
@@ -1024,6 +1090,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   async restoreAfterSystemResume(): Promise<void> {
+    if (this.guestConnection.active) { await this.guestConnection.probe(); return; }
     if (this.resumePromise) return this.resumePromise;
     const generation = this.connectionGeneration;
     this.resumePromise = (async () => {
@@ -1148,6 +1215,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
    * until it leaves.
    */
   private async checkHome(): Promise<void> {
+    if (this.guestConnection.active) return;
     if (!this.accessToken) return;
     const now = Date.now();
     const asleep = this.homePolicy.asleep;
@@ -1210,6 +1278,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   /** «Пускать ко мне домой», docs/app-platform.md "Home road". */
   async setHomeRoad(enabled: boolean): Promise<void> {
+    if (this.guestConnection.active) throw new Error("Сначала завершите гостевой режим.");
     const task = this.homeRoadChain.then(async () => {
       const key = enabled ? (await this.homeRoadKey()).publicKey : null;
       const response = await this.withSession((token) => this.api.setRoadExit(token, key));
@@ -1227,11 +1296,13 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private async refreshHomeRoad(): Promise<void> {
+    if (this.guestConnection.active) return;
     if (!this.accessToken) return;
     await this.applyHomeRoad(await this.withSession((token) => this.api.roadExit(token)));
   }
 
   private async applyHomeRoad(response: RoadExitResponse, rekeyed = false): Promise<void> {
+    if (this.guestConnection.active) return;
     if (!this.accessToken) return;
     this.lastHomeRoadAt = Date.now();
     this.homeRoadAvailable = response.available === true;
@@ -1252,6 +1323,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   /** Another network may mean another interface for the «past the VPN» exit. */
   private recheckHomeRoad(): void {
+    if (this.guestConnection.active) return;
     if (this.homeRoad.config?.mode !== "direct") return;
     this.homeRoadChain = this.homeRoadChain.then(async () => {
       const config = this.homeRoad.config;
@@ -1407,6 +1479,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   /** New resource failures preserve the last-good ordinary policy; protected connectivity remains independent. */
   private async refreshServiceRoutePolicy(server: TunnelServer): Promise<boolean> {
+    if (this.guestConnection.active) return false;
     const profile = this.profile;
     if (this.serviceRoutesRollback || !profile || !this.accessToken) return false;
     await this.serviceRouteState.load().catch(() => {});
@@ -1449,6 +1522,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private serviceRouteStatusChanged(status: ServiceRouteStatus): void {
+    if (this.guestConnection.active) return;
     const profile = this.profile; const token = this.accessToken;
     if (!profile || !token) return;
     const candidates = [this.serviceRouteState.pending(profile.subscriptionId), this.serviceRouteState.good(profile.subscriptionId), profile.serviceRoutes];
@@ -1530,12 +1604,13 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private async applyAccountRules(): Promise<void> {
+    if (this.guestConnection.active) return;
     const subscriptionId = this.state.selectedSubscriptionId;
     if (!this.accessToken || !subscriptionId || this.state.busy) return;
     const before = ruleRoutingKey(this.profile);
     try {
       await this.loadTunnelProfile(subscriptionId);
-      if (ruleRoutingKey(this.profile) === before || !this.xray.isRunning()) return;
+      if (this.guestConnection.active || ruleRoutingKey(this.profile) === before || !this.xray.isRunning()) return;
       this.addLog("Правила аккаунта изменились: переподключение");
       await this.stopTunnelForReplacement();
       await this.connect();
@@ -1684,6 +1759,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private async executeCommand(command: DeliveredCommand): Promise<{ result: "done" | "failed" | "unsupported"; detail: string | null }> {
+    if (this.guestConnection.active) return { result: "unsupported", detail: "Сейчас используется гостевое подключение через телефон." };
     // Only the fixed list runs; a disconnect or anything else is refused here too.
     if (!isRemoteCommand(command.command)) return { result: "unsupported", detail: null };
     if (command.fromFamily && !allowedFromFamily(command.command)) return { result: "unsupported", detail: null };
@@ -2127,6 +2203,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private handleXrayExit(code: number | null, expected: boolean): void {
+    if (this.guestConnection.active) { if (!expected) this.guestConnection.coreExited(); return; }
     if (!expected) this.telemetry.record((session) => session.coreExit(code, false));
     // Startup/recovery failures are handled by the operation awaiting start().
     if (expected || this.state.status !== "connected" || !this.lastConfig) return;
@@ -2135,6 +2212,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private beginTunnelRecovery(detail: string, cause: AttemptCause | null = null): void {
+    if (this.guestConnection.active) { this.guestConnection.coreExited(); return; }
     this.recoveryCause = cause;
     // In-flight probes belong to the failed tunnel, not its replacement.
     this.connectionGeneration += 1;
@@ -2212,6 +2290,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private async verifyTunnelHealth(immediate = false, cause: AttemptCause | null = null): Promise<void> {
+    if (this.guestConnection.active) { await this.guestConnection.probe(); return; }
     if (this.tunnelHealthCheckRunning || this.state.status !== "connected") return;
     const generation = this.connectionGeneration;
     this.tunnelHealthCheckRunning = true;
@@ -2262,6 +2341,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private handleTrafficStats(downloadBytes: number, uploadBytes: number): void {
+    if (this.guestConnection.active) { this.patch({ downloadBytes, uploadBytes }); return; }
     if (downloadBytes < this.lastRawDownload) this.trafficDownloadOffset += this.lastRawDownload;
     if (uploadBytes < this.lastRawUpload) this.trafficUploadOffset += this.lastRawUpload;
     this.lastRawDownload = downloadBytes;
@@ -2323,11 +2403,12 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   private killSwitchProtectionRequired(): boolean {
     return this.killSwitchHealthTimer !== null
-      && this.state.settings.killSwitch
+      && (this.guestConnection.active || this.state.settings.killSwitch)
       && ["connecting", "connected", "reconnecting", "error"].includes(this.state.status);
   }
 
   private async stopTunnelForReplacement(): Promise<void> {
+    if (this.guestConnection.active) return;
     this.cancelRouteProbes();
     this.cancelTunnelRecovery();
     this.nextAttemptCause = "server_switch";
@@ -2487,6 +2568,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
    * is idle, and two minutes before the start at the latest. docs/app-platform.md.
    */
   private async checkMaintenance(): Promise<void> {
+    if (this.guestConnection.active) return;
     const now = Date.now();
     const marked = this.serverMaintenance(now);
     if (JSON.stringify(marked) !== JSON.stringify(this.state.serverMaintenance)) this.patch({ serverMaintenance: marked });
@@ -2898,8 +2980,12 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private patch(patch: Partial<AppSnapshot>): void {
+    if (this.guestConnection.active && !("guest" in patch)) {
+      const { status: _status, statusDetail: _detail, busy: _busy, sessionStartedAt: _started, ...other } = patch;
+      patch = other;
+    }
     const statusChanged = patch.status !== undefined && patch.status !== this.state.status;
-    if (patch.status && statusChanged) {
+    if (patch.status && statusChanged && !this.guestConnection.active) {
       const detail = patch.statusDetail ?? null;
       this.diskLog?.write(`Состояние: ${patch.status}${detail ? ` — ${detail}` : ""}`);
     }
