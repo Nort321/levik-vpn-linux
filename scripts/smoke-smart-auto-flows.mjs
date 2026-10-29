@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { createServer, connect } from 'node:net';
 import dgram from 'node:dgram';
@@ -13,14 +14,15 @@ const repository = fileURLToPath(new URL('../', import.meta.url));
 const bundle = await build({ entryPoints: [join(repository, 'src/main/vpn/serviceRouteTransport.ts')], bundle: true, platform: 'node', format: 'esm', write: false, logLevel: 'silent' });
 const { overrideServiceRoute, queryServiceRouteStatistics } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`);
 const statsBundle = await build({ entryPoints: [join(repository, 'src/main/vpn/xrayStats.ts')], bundle: true, platform: 'node', format: 'esm', write: false, logLevel: 'silent' });
-const { XrayStatsClient } = await import(`data:text/javascript;base64,${Buffer.from(statsBundle.outputFiles[0].contents).toString('base64')}`);
+const { parseXrayStats } = await import(`data:text/javascript;base64,${Buffer.from(statsBundle.outputFiles[0].contents).toString('base64')}`);
+const runFile = promisify(execFile);
 const controlBundle = await build({ stdin: { contents: 'export {withServiceRoutes, compiledServiceRoutes} from "./src/main/vpn/serviceRoutes"; export {ServiceRouteSession} from "./src/main/vpn/serviceRouteSession";', resolveDir: repository, sourcefile: 'live-flow-fixture.ts', loader: 'ts' }, bundle: true, platform: 'node', format: 'esm', write: false, logLevel: 'silent' });
 const { withServiceRoutes, compiledServiceRoutes, ServiceRouteSession } = await import(`data:text/javascript;base64,${Buffer.from(controlBundle.outputFiles[0].contents).toString('base64')}`);
 
 const system = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'windows' : process.platform === 'linux' ? 'linux' : null;
 if (!system) throw new Error('Unsupported platform');
 const executable = process.env.LEVIK_SMART_AUTO_XRAY ?? join(repository, 'vendor/xray', `${system}-${process.arch}`, process.platform === 'win32' ? 'xray.exe' : 'xray');
-const sockets = new Set(), servers = [], datagrams = [], children = [], statsClients = [];
+const sockets = new Set(), servers = [], datagrams = [], children = [];
 function track(socket) { sockets.add(socket); socket.on('error', () => {}); socket.on('close', () => sockets.delete(socket)); return socket; }
 async function listen(server) {
   await new Promise((resolve,reject) => { server.once('error',reject); server.listen(0,'127.0.0.1',resolve); });
@@ -127,8 +129,7 @@ async function run(mux,compiledOverlay=false){
     }finally{owner.stop();}
   }
   const pid=core.pid;
-  const rawStats=compiledOverlay?null:new XrayStatsClient(`127.0.0.1:${api}`);if(rawStats)statsClients.push(rawStats);
-  const stats={query:async pattern=>compiledOverlay?queryServiceRouteStatistics(auth):rawStats.query(pattern)};
+  const stats={query:async pattern=>compiledOverlay?queryServiceRouteStatistics(auth):parseXrayStats((await runFile(executable,['api','statsquery',`--server=127.0.0.1:${api}`,'-pattern',pattern],{timeout:5000})).stdout)};
   const pattern='inbound>>>levik-tun-in>>>traffic>>>';
   const beforeProbe=await stats.query(pattern);
   const probeFlow=await httpFlow(compiledOverlay?compiled.probes[0].port:probe,auth);assert.equal(await tcpMessage(probeFlow,'measurement'),'A:measurement');probeFlow.socket.destroy();
@@ -147,7 +148,6 @@ async function run(mux,compiledOverlay=false){
   console.log(JSON.stringify({result:'PASS',mux,compiledOverlay,pidStable:true,existingTCP:'retained',existingUDP:'retained',newTCP:'new target',newUDP:'new target',privateProbesExcluded:true,userTrafficCounted:true}));
 }
 try{await run(false);await run(true);await run(false,true);await run(true,true);}finally{
-  for(const client of statsClients)client.close();
   for(const socket of sockets)socket.destroy();
   for(const socket of datagrams)try{socket.close();}catch{}
   await Promise.all(children.map(child=>new Promise(resolve=>{if(child.exitCode!==null||child.signalCode!==null)return resolve();child.once('exit',resolve);child.kill();setTimeout(()=>{child.kill('SIGKILL');resolve();},800).unref();})));

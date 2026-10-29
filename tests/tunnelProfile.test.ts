@@ -54,7 +54,8 @@ describe("Linux tunnel profile", () => {
     expect(config.dns).toEqual(expect.objectContaining({
       servers: expect.arrayContaining([expect.objectContaining({ address: "https+local://1.1.1.1/dns-query", domains: ["full:example.com"], skipFallback: true, finalQuery: true })]),
     }));
-    expect((config.outbounds as Array<Record<string, unknown>>)[0]?.streamSettings).toEqual(expect.objectContaining({ sockopt: expect.objectContaining({ domainStrategy: "ForceIP" }) }));
+    const selectedOutbound = (config.outbounds as Array<Record<string, unknown>>).find((outbound) => outbound.protocol === "vless");
+    expect(selectedOutbound?.streamSettings).toEqual(expect.objectContaining({ sockopt: expect.objectContaining({ domainStrategy: "ForceIP" }) }));
     const routing = config.routing as { rules: Array<Record<string, unknown>> };
     expect(routing.rules).not.toContainEqual(expect.objectContaining({
       network: "tcp,udp",
@@ -116,7 +117,7 @@ describe("Linux tunnel profile", () => {
     const outbounds = config.outbounds as Array<Record<string, unknown>>;
     const inbounds = config.inbounds as Array<Record<string, unknown>>;
     const routing = config.routing as { rules: Array<Record<string, unknown>> };
-    expect(config.api).toEqual(expect.objectContaining({ services: ["StatsService"] }));
+    expect(config.api).toEqual(expect.objectContaining({ services: expect.arrayContaining(["StatsService", "RoutingService"]) }));
     expect(outbounds.some((outbound) => outbound.tag === "levik-fragment")).toBe(true);
     expect(routing.rules).toContainEqual(expect.objectContaining({ process: ["chrome.exe"], outboundTag: "direct" }));
     expect(routing.rules).toContainEqual(expect.objectContaining({ ip: ["geoip:ru"], outboundTag: "direct" }));
