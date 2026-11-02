@@ -340,11 +340,20 @@ def main():
     if os.geteuid() != 0 or not os.environ.get("PKEXEC_UID"):
         raise SystemExit("Use pkexec to authorize the network helper")
     os.umask(0o022)
-    STATE.mkdir(mode=0o755, exist_ok=True)
-    lock = open(STATE / "lock", "w")
-    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    recover_core()
-    network = Network(install_core(Path(sys.argv[1])))
+    try:
+        STATE.mkdir(mode=0o755, exist_ok=True)
+        lock = open(STATE / "lock", "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another Levik VPN window already controls the network") from None
+        recover_core()
+        network = Network(install_core(Path(sys.argv[1])))
+    except Exception as error:
+        # Tell the GUI why startup failed; stderr is never forwarded.
+        detail = str(error) if isinstance(error, ValueError) else "Network helper failed to start; check required Linux packages and permissions"
+        print(json.dumps({"event": "fatal", "error": detail}), flush=True)
+        raise
     def shutdown(_signum, _frame):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, shutdown)
