@@ -125,6 +125,7 @@ import {
 } from "./platform/favoriteNodes";
 import { avoidMaintenance, IdleMeter, maintenanceFor, maintenanceMove, type MaintenanceWindow } from "./platform/maintenance";
 import { countryServersWithCore } from "./core/coreServers";
+import { parseDeliveredCommandsWithCore, parseIssuedCommandsWithCore, parseRemoteDevicesWithCore } from "./core/coreRemote";
 import { expiryNoticesWithCore, parseAccountNoticesWithCore } from "./core/coreNotices";
 import { reconcileFavoritesWithCore, unionNodeListsWithCore } from "./core/coreFavorites";
 import { captivePortal, checkServices, diagnosisSummary, diagnosisVerdict, parseDiagnoseReport, vpnPhase, type DiagnosisInput } from "./platform/diagnosis";
@@ -150,9 +151,6 @@ import {
   createReplyKey,
   FAMILY_HELP_TEXT,
   openReply,
-  parseDeliveredCommands,
-  parseIssuedCommands,
-  parseRemoteDevices,
   sealForReply,
 } from "./platform/remoteCommands";
 import type { DeliveredCommand } from "./platform/remoteCommands";
@@ -1695,7 +1693,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     if (!this.accessToken) return;
     if (watch) this.remoteWatchedUntil = Date.now() + REMOTE_WATCH_MS;
     const response = await this.withSession((token) => this.api.remoteDevices(token));
-    const commands = parseIssuedCommands(response.commands);
+    const commands = parseIssuedCommandsWithCore(this.core, response.commands);
     const notes = { ...this.state.remote.notes };
     for (const command of commands) {
       const key = this.replyKeys.get(command.id);
@@ -1704,7 +1702,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       const link = command.state === "done" && command.detail ? openReply(key, command.detail) : null;
       if (link) notes[command.id] = link;
     }
-    this.patch({ remote: { devices: parseRemoteDevices(response.devices), commands, notes, loadedAt: Date.now() } });
+    this.patch({ remote: { devices: parseRemoteDevicesWithCore(this.core, response.devices), commands, notes, loadedAt: Date.now() } });
   }
 
   private refreshRemoteIfWatched(): void {
@@ -1720,7 +1718,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     }
     const reply = command === "collect_diagnostics" ? createReplyKey() : null;
     const response = await this.withSession((token) => this.api.issueCommand(token, deviceId, command, reply?.replyKey ?? null));
-    const [issued] = parseIssuedCommands([response.command]);
+    const [issued] = parseIssuedCommandsWithCore(this.core, [response.command]);
     if (issued && reply) this.replyKeys.set(issued.id, reply.privateKey);
     await this.refreshRemote(false);
   }
@@ -1766,7 +1764,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   private async takeAndRunCommands(): Promise<void> {
     if (!this.accessToken) return;
     const response = await this.withSession((token) => this.api.takeCommands(token));
-    for (const command of parseDeliveredCommands(response.commands)) {
+    for (const command of parseDeliveredCommandsWithCore(this.core, response.commands)) {
       if (this.handledCommands.has(command.id)) continue;
       this.handledCommands.add(command.id);
       if (this.handledCommands.size > MAX_HANDLED_COMMANDS) {
