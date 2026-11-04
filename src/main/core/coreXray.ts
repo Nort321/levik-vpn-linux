@@ -2,8 +2,8 @@ import { randomBytes } from "node:crypto";
 import type { AppSettings, TunnelServer } from "../../shared/contracts";
 import { adoptServiceRoutes, compiledServiceRoutes } from "../vpn/serviceRoutes";
 import type { PreparedTunnelProfile } from "../vpn/tunnelProfile";
-import { buildXrayConfig } from "../vpn/xrayConfig";
-import { isXrayConfigAnswer, type XrayConfigAnswer } from "./coreGuards";
+import { bindXrayOutboundInterface, buildXrayConfig } from "../vpn/xrayConfig";
+import { isBoundXrayConfig, isXrayConfigAnswer, type XrayConfigAnswer } from "./coreGuards";
 import type { RustCore } from "./rustCore";
 
 const NAME = "xrayConfig.buildXrayConfig";
@@ -29,4 +29,13 @@ export function buildXrayConfigWithCore(
   }, isXrayConfigAnswer);
   if (answer.serviceRoutes) adoptServiceRoutes(answer.config, answer.serviceRoutes);
   return answer.config;
+}
+
+const BIND = "xrayConfig.bindOutboundInterface";
+
+/** The configuration bound to the physical adapter (bindXrayOutboundInterface) through the Rust core. */
+export function bindXrayOutboundInterfaceWithCore(core: RustCore, config: Record<string, unknown>, interfaceName: string): Record<string, unknown> {
+  if (core.mode === "ts" || !core.has(BIND)) return bindXrayOutboundInterface(config, interfaceName);
+  const input = { config, interfaceName, platform: "linux" };
+  return core.run(BIND, input, () => bindXrayOutboundInterface(config, interfaceName), isBoundXrayConfig);
 }

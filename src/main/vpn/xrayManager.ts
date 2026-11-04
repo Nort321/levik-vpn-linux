@@ -15,7 +15,8 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
   private outboundName: string | null = null;
-  constructor() {
+  /** Binds the configuration to the physical adapter; the controller passes the core's. */
+  constructor(private readonly bind: typeof bindXrayOutboundInterface = bindXrayOutboundInterface) {
     super();
     networkHelper.on("exit", (code) => this.exited(code));
     networkHelper.on("lost", () => this.exited(null));
@@ -24,7 +25,7 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     await this.stop();
     const interfaceName = guestHost ? guestInterface(guestHost) : await findLinuxOutboundInterface();
     this.outboundName = interfaceName;
-    await networkHelper.request("start", { config: bindXrayOutboundInterface(config, interfaceName) });
+    await networkHelper.request("start", { config: this.bind(config, interfaceName) });
     this.running = true;
     try { await this.serviceRoutes.start(config); }
     catch (error) { await this.stop(); throw error; }

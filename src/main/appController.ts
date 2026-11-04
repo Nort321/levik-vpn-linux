@@ -36,7 +36,7 @@ import { SecureStore } from "./security/secureStore";
 import { decryptTunnelProfile, ruleRoutingKey } from "./vpn/tunnelProfile";
 import type { PreparedTunnelProfile } from "./vpn/tunnelProfile";
 import { prepareProfileWithCore } from "./core/coreProfile";
-import { buildXrayConfigWithCore } from "./core/coreXray";
+import { bindXrayOutboundInterfaceWithCore, buildXrayConfigWithCore } from "./core/coreXray";
 import { XrayManager } from "./vpn/xrayManager";
 import { FAILED_TRAFFIC_CHECK_MS, isTunnelHealthy, measureTraffic } from "./vpn/tunnelHealth";
 import {
@@ -232,7 +232,7 @@ type PersistedSettings = Partial<AppSettings> & {
 export class AppController extends EventEmitter<AppControllerEvents> {
   private readonly secureStore = new SecureStore();
   private readonly serviceRouteState = new ServiceRouteState(this.secureStore);
-  private readonly xray = new XrayManager();
+  private readonly xray = new XrayManager((config, interfaceName) => bindXrayOutboundInterfaceWithCore(this.core, config, interfaceName));
   private readonly dnsLeakProtection = new DnsLeakProtection();
   private readonly killSwitch = new LinuxKillSwitch();
   private normalStopTail: Promise<void> = Promise.resolve();
