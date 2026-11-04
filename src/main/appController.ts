@@ -36,7 +36,7 @@ import { SecureStore } from "./security/secureStore";
 import { decryptTunnelProfile, ruleRoutingKey } from "./vpn/tunnelProfile";
 import type { PreparedTunnelProfile } from "./vpn/tunnelProfile";
 import { prepareProfileWithCore } from "./core/coreProfile";
-import { buildXrayConfig } from "./vpn/xrayConfig";
+import { buildXrayConfigWithCore } from "./core/coreXray";
 import { XrayManager } from "./vpn/xrayManager";
 import { FAILED_TRAFFIC_CHECK_MS, isTunnelHealthy, measureTraffic } from "./vpn/tunnelHealth";
 import {
@@ -805,7 +805,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       if (this.state.settings.preventDnsLeaks) await this.dnsLeakProtection.enable();
       progress.reach("profile", "config_invalid");
       await this.refreshServiceRoutePolicy(server);
-      const config = buildXrayConfig(this.serviceProfileFor(server), server, this.state.settings);
+      const config = buildXrayConfigWithCore(this.core, this.serviceProfileFor(server), server, this.state.settings);
       this.lastConfig = config;
       progress.reach("core", "core_start_failed");
       await this.startXray(config, generation);
@@ -1599,7 +1599,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     const profile = this.profile;
     const candidateProfile = this.serviceProfileFor(server); const policy = candidateProfile.serviceRoutes;
     if (!changed || !policy || !serviceExitForServer(policy, server) || !this.xray.isRunning()) return;
-    const candidate = buildXrayConfig(candidateProfile, server, this.state.settings);
+    const candidate = buildXrayConfigWithCore(this.core, candidateProfile, server, this.state.settings);
     const compiled = compiledServiceRoutes(candidate);
     if (compiled && ["unsupported", "error", "suspended"].includes(compiled.status.state)) {
       this.serviceRouteStatusChanged(compiled.status); this.serviceRouteState.discard(profile.subscriptionId);
@@ -2288,7 +2288,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
             if (server) {
               this.patch({ selectedServerId: server.id });
               await this.secureStore.put("selected_server", Buffer.from(server.id));
-              this.lastConfig = buildXrayConfig(this.profile, server, this.state.settings);
+              this.lastConfig = buildXrayConfigWithCore(this.core, this.profile, server, this.state.settings);
             }
           }
           this.assertCurrentConnection(generation);
@@ -2808,7 +2808,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   private routeProbeSource(server: TunnelServer): Record<string, unknown> {
     const profile = { ...this.serviceProfileFor(server) }; delete profile.serviceRoutes;
-    return buildXrayConfig(profile, server, { ...this.state.settings, automaticServer: false });
+    return buildXrayConfigWithCore(this.core, profile, server, { ...this.state.settings, automaticServer: false });
   }
 
   private smartAutoLiveChanged(update: LiveAutoUpdate): void {
