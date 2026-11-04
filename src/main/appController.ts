@@ -1,3 +1,7 @@
+import { CoreApprovals } from "./core/coreApprovals";
+import { CoreEndpoints } from "./core/coreEndpoints";
+import { CoreSettings } from "./core/coreSettings";
+import { CoreLiveLoad } from "./core/coreLiveLoad";
 import { GuestConnection } from "./vpn/guestConnection";
 import { guestInterface, parseGuestInvitation } from "./vpn/guestSession";
 import { ServiceRouteState } from "./vpn/serviceRouteState";
@@ -97,26 +101,14 @@ import {
 } from "./platform/remoteConfig";
 import type { StoredRemoteConfig } from "./platform/remoteConfig";
 import {
-  currentQuality,
-  currentRouteResource,
   LIVE_LOAD_CONNECTED_EVERY_MS,
   LIVE_LOAD_MAX_AGE_MS,
   LiveLoadClient,
-  mergeLiveLoad,
   type LiveLoad,
 } from "./platform/liveLoad";
-import {
-  parsePending,
-  parseSettingsDocument,
-  portableSettings,
-  remotePatch,
-  syncedChanges,
-  withoutConfirmed,
-} from "./platform/settingsSync";
 import type { SyncedSettings } from "./platform/settingsSync";
-import { LiveEvents, presenceReport, samePresence } from "./platform/liveEvents";
+import { LiveEvents, samePresence } from "./platform/liveEvents";
 import type { LiveEvent, PresenceReport } from "./platform/liveEvents";
-import { isAccountHint, isApprovalAnswer, isTelegramLink, matchNumber, parseApprovals } from "./platform/loginApproval";
 import {
   isCanonicalNodeList,
   nodeIdForServer,
@@ -158,7 +150,8 @@ import {
 import type { DeliveredCommand } from "./platform/remoteCommands";
 import { isFinalState, isRemoteCommand, REMOTE_COMMAND_LABELS } from "../shared/remote";
 import type { RemoteCommand, RemoteSnapshot } from "../shared/remote";
-import type { KeyObject } from "node:crypto";
+import type { ReplyPrivateKey } from "./platform/remoteCommands";
+import type { NativeReplyCrypto } from "./core/nativeReply";
 
 interface AppControllerEvents {
   changed: [snapshot: AppSnapshot];
@@ -320,12 +313,17 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   private diskLog: DiskLog | null = null;
   private readonly remoteConfig = new RemoteConfigClient("linux", app.getVersion());
   private readonly remoteConfigStore = new RemoteConfigStore(join(app.getPath("userData"), "remote-config.json"));
-  private readonly endpointsStore = new ServiceEndpointsStore(join(app.getPath("userData"), "service-endpoints.json"));
+  private readonly endpointsStore = new ServiceEndpointsStore(join(app.getPath("userData"), "service-endpoints.json"), fetch, (body, signature) => this.endpointsCore.verify(body, signature));
   private remoteStored: StoredRemoteConfig | null = null;
   /** Stage 2 of the Rust migration: TypeScript alone until main.ts hands over the loaded module. */
   private core = new RustCore(null, () => {}, "ts");
+  private replyCrypto: NativeReplyCrypto | null = null;
+  private readonly approvalsCore = new CoreApprovals(() => this.core);
+  private readonly endpointsCore = new CoreEndpoints(() => this.core);
+  private readonly settingsCore = new CoreSettings(() => this.core);
+  private readonly loadCore = new CoreLiveLoad(() => this.core);
   /** Node load, full nodes and quality, docs/app-platform.md "Node load". */
-  private readonly liveLoadClient = new LiveLoadClient("linux", app.getVersion());
+  private readonly liveLoadClient = new LiveLoadClient("linux", app.getVersion(), fetch, (value) => this.loadCore.parse(value));
   private liveLoad: LiveLoad | null = null;
   private liveLoadRefresh: Promise<void> | null = null;
   private nextConnectedLoadAt = 0;
@@ -359,7 +357,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   private noticeChain: Promise<void> = Promise.resolve();
   private readonly shownNotices = new Set<string>();
   /** Private keys of diagnostics requests sent from here, by command id. */
-  private readonly replyKeys = new Map<string, KeyObject>();
+  private readonly replyKeys = new Map<string, ReplyPrivateKey>();
   private remoteWatchedUntil = 0;
   private readonly idleMeter = new IdleMeter();
   private liveEvents: LiveEvents | null = null;
@@ -563,7 +561,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       const challenge = await this.api.createChallenge({
         accountActivationSupported: true,
         numberMatchSupported: true,
-        ...(isAccountHint(accountHint) ? { accountHint } : {}),
+        ...(this.approvalsCore.isAccountHint(accountHint) ? { accountHint } : {}),
         publicKeySpki: this.identity.publicKeySpkiBase64Url(),
         deviceLabel: "Levik VPN for Linux",
         deviceModel: `${platform()} ${process.arch}`.slice(0, 128),
@@ -582,8 +580,8 @@ export class AppController extends EventEmitter<AppControllerEvents> {
         verificationUri,
         verificationCode: challenge.activationCode ?? challenge.verificationCode ?? null,
         expiresAt: challenge.expiresAt,
-        matchNumber: matchNumber(challenge.matchNumber),
-        telegramUri: typeof telegramUri === "string" && isTelegramLink(telegramUri) ? telegramUri : null,
+        matchNumber: this.approvalsCore.matchNumber(challenge.matchNumber),
+        telegramUri: typeof telegramUri === "string" && this.approvalsCore.isTelegramLink(telegramUri) ? telegramUri : null,
         approvalRequested: challenge.approvalRequested === true,
       };
     } finally {
@@ -1163,7 +1161,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
         if (generation !== this.loginGeneration) return;
         this.accessToken = status.accessToken;
         await this.secureStore.put("access_token", Buffer.from(status.accessToken));
-        if (isAccountHint(status.accountHint)) await this.secureStore.put("account_hint", Buffer.from(status.accountHint));
+        if (this.approvalsCore.isAccountHint(status.accountHint)) await this.secureStore.put("account_hint", Buffer.from(status.accountHint));
         this.patch({ sessionAvailable: true });
         this.startLiveEvents();
         try {
@@ -1719,7 +1717,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     if (!this.state.remote.devices.some((item) => item.deviceId === deviceId && item.remote)) {
       throw new Error("Устройство недоступно для пульта");
     }
-    const reply = command === "collect_diagnostics" ? createReplyKey() : null;
+    const reply = command === "collect_diagnostics" ? createReplyKey(this.core.mode === "rust" ? this.replyCrypto : null) : null;
     const response = await this.withSession((token) => this.api.issueCommand(token, deviceId, command, reply?.replyKey ?? null));
     const [issued] = parseIssuedCommandsWithCore(this.core, [response.command]);
     if (issued && reply) this.replyKeys.set(issued.id, reply.privateKey);
@@ -1830,7 +1828,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
             body: "Её запросили с другого вашего устройства. Отчёт зашифрован и откроется только там.",
             tab: "profile",
           });
-          return { result: "done", detail: sealForReply(command.replyKey, link) };
+          return { result: "done", detail: sealForReply(command.replyKey, link, this.core.mode === "rust" ? this.replyCrypto : null) };
         }
       }
     } catch (error) {
@@ -1846,7 +1844,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.approvalsTimer = null;
     let approvals: PendingApproval[];
     try {
-      approvals = parseApprovals((await this.withSession((token) => this.api.approvals(token))).approvals);
+      approvals = this.approvalsCore.parseApprovals((await this.withSession((token) => this.api.approvals(token))).approvals);
     } catch (error) {
       this.addLog(`Запросы на вход: ${messageOf(error)}`);
       return;
@@ -1870,7 +1868,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   async answerApproval(id: string, number: number | null): Promise<ApprovalAnswerResult> {
     const approval = this.state.pendingApprovals.find((item) => item.id === id);
-    if (!approval || !isApprovalAnswer(approval, number)) throw new Error("Запрос на вход уже обработан или истёк");
+    if (!approval || !this.approvalsCore.isApprovalAnswer(approval, number)) throw new Error("Запрос на вход уже обработан или истёк");
     try {
       const response = await this.withSession((token) => this.api.decideApproval(token, id, number));
       return response.state === "approved" ? "approved" : "declined";
@@ -1902,7 +1900,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       await this.withdrawPresence();
       return;
     }
-    const report = presenceReport(this.state.status, this.activeMainServer());
+    const report = this.loadCore.presenceReport(this.state.status, this.activeMainServer());
     const fresh = Date.now() - this.sentPresenceAt < PRESENCE_REFRESH_MS - 10_000;
     if (!force && fresh && samePresence(this.sentPresence, report)) return;
     const result = await this.withSession((token) => this.api.reportPresence(token, report));
@@ -1987,7 +1985,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       const record = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
       const revision = record.revision;
       this.settingsRevision = typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
-      this.pendingSync = parsePending(record.pending);
+      this.pendingSync = this.settingsCore.parsePending(record.pending);
       this.favoritesJoined = record.favoritesJoined === true;
       this.favoriteReconciledLocal = new Set(Array.isArray(record.favoriteLocal)
         ? record.favoriteLocal.filter((id): id is string => typeof id === "string").slice(0, 200)
@@ -2018,7 +2016,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       return;
     }
     if (!next.syncSettings) return;
-    const changes = syncedChanges(previous, next);
+    const changes = this.settingsCore.syncedChanges(previous, next);
     // Until the first exchange joins them, favourites are not edits of the account's list.
     if (!this.favoritesJoined) delete changes.favoriteNodes;
     if (!Object.keys(changes).length) return;
@@ -2042,22 +2040,22 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   private async exchangeSettings(): Promise<void> {
     if (!this.state.settings.syncSettings || !this.accessToken) return;
     const sent = { ...this.pendingSync };
-    let document = parseSettingsDocument(Object.keys(sent).length
+    let document = this.settingsCore.parseSettingsDocument(Object.keys(sent).length
       ? await this.withSession((token) => this.api.updateSettings(token, sent))
       : await this.withSession((token) => this.api.settings(token)));
     if (document?.revision === 0) {
       // Nothing saved for this account yet: this computer's settings become the shared ones.
-      const seed = portableSettings(this.state.settings);
-      document = parseSettingsDocument(await this.withSession((token) => this.api.updateSettings(token, seed)));
+      const seed = this.settingsCore.portableSettings(this.state.settings);
+      document = this.settingsCore.parseSettingsDocument(await this.withSession((token) => this.api.updateSettings(token, seed)));
     }
     if (!document) throw new Error("Сервер вернул некорректные настройки");
-    this.pendingSync = withoutConfirmed(this.pendingSync, sent);
+    this.pendingSync = this.settingsCore.withoutConfirmed(this.pendingSync, sent);
     if (!this.favoritesJoined) await this.joinFavorites(document.settings.favoriteNodes ?? undefined);
     this.settingsRevision = document.revision;
     await this.saveSyncState();
     this.lastSettingsSyncAt = Date.now();
     if (!this.state.settings.syncSettings) return;
-    const patch = remotePatch(this.state.settings, document.settings, this.pendingSync);
+    const patch = this.settingsCore.remotePatch(this.state.settings, document.settings, this.pendingSync);
     if (Object.keys(patch).length) {
       this.addLog(`Настройки синхронизированы с аккаунтом: ${Object.keys(patch).join(", ")}`);
       await this.updateSettings(patch, "sync");
@@ -2493,6 +2491,8 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.core = new RustCore(coreBridge(status), (line) => this.recordDiagnostic(line), "ts", version);
     this.telemetry.useCore(() => this.core.tally());
     this.applyCoreMode();
+    this.identity.useRustCore(this.core, status.state === "loaded" ? status.module.restoreIdentity : undefined);
+    this.replyCrypto = status.state === "loaded" ? status.module.replyCrypto ?? null : null;
   }
 
   private applyCoreMode(): void {
@@ -2564,7 +2564,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       load: useLive ? live.load : config?.config.nodeLoad ?? {},
       ageMs: now - fetchedAt,
       full: Object.fromEntries((fullFresh ? live.full : []).map((id) => [id, 1])),
-      quality: currentQuality(live, now),
+      quality: this.loadCore.currentQuality(live, now),
     };
   }
 
@@ -2579,7 +2579,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       const answer = await this.liveLoadClient.fetch(this.liveLoad?.etag ?? null);
       if (!answer) return;
       const now = Date.now();
-      this.liveLoad = mergeLiveLoad(this.liveLoad, answer, now, throughTunnel);
+      this.liveLoad = this.loadCore.merge(this.liveLoad, answer, now, throughTunnel);
       this.trackFullServers(now);
       const load = this.serverLoad(now);
       if (JSON.stringify(load) !== JSON.stringify(this.state.serverLoad)) this.patch({ serverLoad: load });
@@ -2833,7 +2833,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   private routeResource(server: TunnelServer, now: number) {
     const endpoint = serverSyncEndpoint(server);
-    return currentRouteResource(this.liveLoad, endpoint ? [
+    return this.loadCore.currentRouteResource(this.liveLoad, endpoint ? [
       endpoint.port === null ? null : nodeIdForEndpoint(endpoint.host, endpoint.port), nodeIdForHost(endpoint.host),
     ] : [], now);
   }
