@@ -33,8 +33,9 @@ import { DeviceIdentity } from "./security/deviceIdentity";
 import type { SerializedIdentity } from "./security/deviceIdentity";
 import { RequestSigner } from "./security/requestSigner";
 import { SecureStore } from "./security/secureStore";
-import { decryptTunnelProfile, prepareTunnelProfile, ruleRoutingKey } from "./vpn/tunnelProfile";
+import { decryptTunnelProfile, ruleRoutingKey } from "./vpn/tunnelProfile";
 import type { PreparedTunnelProfile } from "./vpn/tunnelProfile";
+import { prepareProfileWithCore } from "./core/coreProfile";
 import { buildXrayConfig } from "./vpn/xrayConfig";
 import { XrayManager } from "./vpn/xrayManager";
 import { FAILED_TRAFFIC_CHECK_MS, isTunnelHealthy, measureTraffic } from "./vpn/tunnelHealth";
@@ -1189,7 +1190,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     const response = await this.withSession((token) => this.api.tunnelProfile(token, subscriptionId));
     const plaintext = decryptTunnelProfile(this.identity, response.profile);
     try {
-      const profile = prepareTunnelProfile(plaintext, subscriptionId);
+      const profile = prepareProfileWithCore(this.core, plaintext, subscriptionId);
       if (this.profile?.subscriptionId === profile.subscriptionId && this.profile.serviceRoutes) profile.serviceRoutes = this.profile.serviceRoutes;
       this.profile = profile;
       const selected = this.state.selectedServerId;
