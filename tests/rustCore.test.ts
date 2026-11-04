@@ -7,6 +7,8 @@ import { bindXrayOutboundInterfaceWithCore, buildXrayConfigWithCore } from "../s
 import { countryServersWithCore } from "../src/main/core/coreServers";
 import { reconcileFavoritesWithCore, unionNodeListsWithCore } from "../src/main/core/coreFavorites";
 import { expiryNoticesWithCore, parseAccountNoticesWithCore } from "../src/main/core/coreNotices";
+import { networkTypeOfInterfaceWithCore } from "../src/main/core/coreTelemetry";
+import { networkTypeOfInterface } from "../src/main/telemetry/codes";
 import { parseDeliveredCommandsWithCore, parseIssuedCommandsWithCore, parseRemoteDevicesWithCore } from "../src/main/core/coreRemote";
 import { parseIssuedCommands } from "../src/main/platform/remoteCommands";
 import { parseAccountNotices } from "../src/main/platform/accountNotices";
@@ -550,6 +552,21 @@ describe("bindXrayOutboundInterfaceWithCore", () => {
   });
 });
 
+const ADAPTERS = [null, "", "wlp2s0", "wifi0", "ra0", "wwan0", "usb0", "enp3s0", "Eth0", "lo", "\u212Aey"];
+
+describe("telemetry codes through the core", () => {
+  it("asks nothing in ts mode, and uses known types from Rust in rust mode only", () => {
+    const bridge = fakeBridge({ "telemetryCodes.networkTypeOfInterface": () => "wifi" });
+    expect(networkTypeOfInterfaceWithCore(new RustCore(bridge, () => {}, "ts"), "eth0")).toBe("ethernet");
+    expect(bridge.calls).toEqual([]);
+    const answers: unknown[] = ["wifi", "wireless"];
+    const core = new RustCore(fakeBridge({ "telemetryCodes.networkTypeOfInterface": () => answers.shift() }), () => {}, "rust");
+    expect(networkTypeOfInterfaceWithCore(core, "eth0")).toBe("wifi");
+    expect(networkTypeOfInterfaceWithCore(core, "eth0")).toBe("ethernet");
+    expect(core.stats()).toMatchObject({ decided: 1, failed: 1 });
+  });
+});
+
 // The real module, when `npm run download:levik-core` (or a local build) put it into vendor.
 const status = loadLevikCore(levikCorePath({ packaged: false, resourcesPath: "", appPath: join(__dirname, "..") }));
 const bridge = coreBridge(status);
@@ -728,6 +745,15 @@ describe.runIf(bridge !== null)("the Rust core in shadow mode agrees with TypeSc
     expect(lines).toEqual([]);
     expect(core.stats()).toMatchObject({ differed: 0, failed: 0 });
     expect(core.stats().compared - before).toBe(RAW_DELIVERED.length + RAW_DEVICES.length + RAW_ISSUED.length - 3);
+  });
+
+  it("telemetry codes", () => {
+    expect(core.has("telemetryCodes.networkTypeOfInterface")).toBe(true);
+    const before = core.stats().compared;
+    for (const name of ADAPTERS) expect(networkTypeOfInterfaceWithCore(core, name)).toBe(networkTypeOfInterface(name));
+    expect(lines).toEqual([]);
+    expect(core.stats()).toMatchObject({ differed: 0, failed: 0 });
+    expect(core.stats().compared - before).toBe(ADAPTERS.length);
   });
 
   it("configurations bound to the adapter", () => {

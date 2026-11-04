@@ -266,3 +266,7 @@ export function isBoundXrayConfig(value: unknown): value is Record<string, unkno
   return isRecord(value) && Array.isArray(value.inbounds) && value.inbounds.length > 0
     && Array.isArray(value.outbounds) && value.outbounds.length > 0;
 }
+
+export function isNetworkType(value: unknown): value is "wifi" | "cellular" | "ethernet" | "unknown" {
+  return value === "wifi" || value === "cellular" || value === "ethernet" || value === "unknown";
+}

@@ -70,7 +70,8 @@ import { AppUpdater } from "./update/appUpdater";
 import { setAutostart } from "./linux/autostart";
 import { networkHelper } from "./linux/networkHelper";
 import { normalizeProcessSelection } from "../shared/processes";
-import { networkTypeOfInterface, protocolOf } from "./telemetry/codes";
+import { protocolOf } from "./telemetry/codes";
+import { networkTypeOfInterfaceWithCore } from "./core/coreTelemetry";
 import { ConnectionTelemetry } from "./telemetry/connectionTelemetry";
 import { DiskLog } from "./diagnostics/diskLog";
 import { createSupportNote, MAX_SUPPORT_NOTE_BYTES, supportNoteText } from "./diagnostics/supportNote";
@@ -3063,7 +3064,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private recordNetwork(): void {
-    const type = networkTypeOfInterface(this.xray.outboundInterfaceName ?? null);
+    const type = networkTypeOfInterfaceWithCore(this.core, this.xray.outboundInterfaceName ?? null);
     this.telemetry.record((session) => session.setNetwork(type));
   }
 
