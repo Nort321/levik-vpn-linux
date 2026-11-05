@@ -30,8 +30,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p core-input/linux-x64
-          gh api "repos/$GITHUB_REPOSITORY/releases/assets/711430314" -H "Accept: application/octet-stream" > core-input/linux-x64/levik_core.node
-          printf '%s\n' '1b9c59c01ce3170ae3b40b781f3b6f8da3988b8221f4d63eb0009306d1b37da6  core-input/linux-x64/levik_core.node' | sha256sum --check
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/712731139" -H "Accept: application/octet-stream" > core-input/linux-x64/levik_core.node
+          printf '%s\n' '3c1a5bb02460cdbf74a36a58707c3a2b128e3f689d2c56b2dceb9c429583cd39  core-input/linux-x64/levik_core.node' | sha256sum --check
       - uses: actions/upload-artifact@v4
         with:
           name: levik-core-pinned
@@ -92,7 +92,7 @@ jobs:
         if: needs.core.result == 'success'
         run: |
           set -euo pipefail
-          ELECTRON_RUN_AS_NODE=1 release/linux-unpacked/levik-vpn scripts/smoke-bundled-core.cjs release/linux-unpacked/resources/levik-core/levik_core.node "0.11.0"
+          ELECTRON_RUN_AS_NODE=1 release/linux-unpacked/levik-vpn scripts/smoke-bundled-core.cjs release/linux-unpacked/resources/levik-core/levik_core.node "0.15.0"
       - name: Inspect packages and checksum release artifacts
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -144,6 +144,7 @@ jobs:
           awk '/^## / {section++; next} section == 1 {print}' CHANGELOG.md > "$notes"
           test -s "$notes"
           if gh release view "$tag" >/dev/null 2>&1; then
+            test "$(gh release view "$tag" --json isDraft --jq .isDraft)" = true || { echo 'Refusing to overwrite a published release'; exit 1; }
             gh release upload "$tag" release/* --clobber
           else
             gh release create "$tag" release/* --target "$COMMIT_SHA" \
