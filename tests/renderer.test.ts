@@ -26,13 +26,17 @@ const bridge: LevikDesktopApi = {
   connect: noop, disconnect: noop, updateSettings: vi.fn(async () => {}), openExternal: noop,
   listProcesses: async () => [{ name: "firefox", path: "/usr/bin/firefox", running: true }, { name: "code", path: "/usr/bin/code", running: true }],
   selectExecutable: async () => null, pingServers: noop, revokeDevice: noop, setSubscriptionShield: noop,
-  authorizeActivation: noop, checkForUpdates: noop, downloadUpdate: noop, installUpdate: noop, createSupportReport: async () => "https://note.leviknet.com/x#v1.key",
+  authorizeActivation: vi.fn(async () => {}), checkForUpdates: noop, downloadUpdate: noop, installUpdate: noop, createSupportReport: async () => "https://note.leviknet.com/x#v1.key",
   dismissAnnouncement: vi.fn(async () => {}), openCabinet: vi.fn(async () => {}), onNavigate: () => () => {},
   refreshRemote: noop, sendRemoteCommand: vi.fn(async () => {}), openRemoteNote: vi.fn(async () => {}), setHomeRoad: vi.fn(async () => {}),
   diagnose: vi.fn(async () => ({ verdict: "SERVICE_RESTRICTED", text: "YouTube ограничен в России: через VPN он работает.", action: "connect" as const, actionLabel: "Подключить VPN" })),
   applyDiagnosisAction: vi.fn(async () => {}),
   refreshDrop: noop, sendDropFiles: vi.fn(async () => {}), dropFilePaths: () => [], answerDrop: vi.fn(async () => {}),
   controlDrop: vi.fn(async () => {}), chooseDropFolder: noop, showDropFiles: noop,
+  signInWithPairingCode: vi.fn(async () => {}),
+  createDevicePairing: vi.fn(async () => ({ id: "74ea3429-0a7e-4f42-a4ef-50f019c13a39", uri: `https://leviknet.com/activate?pair=${"p".repeat(43)}`, code: "ABCD-EFGH-JK23", expiresAt: new Date(Date.now() + 300_000).toISOString() })),
+  devicePairingStatus: vi.fn(async () => ({ state: "connected" as const, deviceName: "<b>Android TV</b>" })),
+  cancelDevicePairing: vi.fn(async () => {}),
 };
 function button(selector: string): HTMLButtonElement { const node = document.querySelector<HTMLButtonElement>(selector); if (!node) throw new Error(`Missing ${selector}`); return node; }
 function press(key: string, ctrlKey = false): void { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true })); }
@@ -132,6 +136,47 @@ describe("Rendered desktop integration", () => {
     expect(button("#login-button").getAttribute("aria-disabled")).toBeNull();
     expect(document.querySelector(".login-status")?.textContent).toContain("Вход отменён");
     expect(document.querySelector(".login-match")).toBeNull();
+  });
+  it("signs in either way: shows this computer's QR or takes the code of a signed-in device", async () => {
+    const signedOut = { ...snapshot, sessionAvailable: false, account: null };
+    emit(signedOut);
+    button("#qr-login-button").click();
+    await vi.waitFor(() => expect(document.querySelector(".login-qr svg")).not.toBeNull());
+    expect(button('[data-login-qr="show"]').getAttribute("aria-pressed")).toBe("true");
+    const cancels = vi.mocked(bridge.cancelLogin).mock.calls.length;
+    button('[data-login-qr="enter"]').click();
+    expect(bridge.cancelLogin).toHaveBeenCalledTimes(cancels + 1);
+    expect(document.querySelector(".login-qr")).toBeNull();
+    const input = document.querySelector<HTMLInputElement>("#pairing-sign-in-code")!;
+    expect(document.querySelector('label[for="pairing-sign-in-code"]')).not.toBeNull();
+    input.value = "abcd efgh jk23";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(input.value).toBe("ABCD-EFGH-JK23");
+    document.querySelector<HTMLFormElement>("#pairing-sign-in-form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(bridge.signInWithPairingCode).toHaveBeenCalledWith("ABCD-EFGH-JK23");
+    await Promise.resolve(); await Promise.resolve();
+    button("#cancel-login-button").click();
+    expect(document.querySelector("#qr-login-button")).not.toBeNull();
+  });
+  it("connects a new device from the profile: QR with a code, or the code the new device shows", async () => {
+    emit({ ...snapshot });
+    button('[data-tab="profile"]').click();
+    button("#device-pairing-create").click();
+    await vi.waitFor(() => expect(document.querySelector(".pairing-qr svg")).not.toBeNull());
+    expect(bridge.createDevicePairing).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".pairing-code")?.textContent).toBe("ABCD-EFGH-JK23");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(bridge.devicePairingStatus).toHaveBeenCalledWith("74ea3429-0a7e-4f42-a4ef-50f019c13a39");
+    await vi.waitFor(() => expect(document.querySelector(".pairing-result")?.textContent).toContain("<b>Android TV</b> подключено"));
+    expect(document.querySelector(".pairing-result b")).toBeNull();
+    button('[data-pairing-mode="enter"]').click();
+    const input = document.querySelector<HTMLInputElement>("#activation-code")!;
+    input.value = "abcdefghjk23mn45";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector<HTMLFormElement>("#activation-form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(bridge.authorizeActivation).toHaveBeenCalledWith("ABCD-EFGH-JK23-MN45");
+    await Promise.resolve(); await Promise.resolve();
+    button('[data-pairing-mode="show"]').click();
   });
   it("marks a server going into maintenance in the list", () => {
     const end = new Date(2026, 9, 14, 14, 30).getTime();
