@@ -1,3 +1,4 @@
+import type { StartServiceProbe } from "../core/nativeServiceProbes";
 import { CoreXrayApi, type StartXrayRequest } from "../core/nativeXrayApi";
 import type { RustCore } from "../core/rustCore";
 import { guestInterface } from "./guestSession";
@@ -14,9 +15,9 @@ import { networkHelper } from "../linux/networkHelper";
 export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code: number | null, expected: boolean]; stats: [downloadBytes: number, uploadBytes: number]; serviceRoutes: [status: ServiceRouteStatus] }> {
   readonly serviceRoutes = new ServiceRouteSession((status) => this.emit("serviceRoutes", status));
   private readonly localApi = new CoreXrayApi();
-  useRustCore(current: () => RustCore, start: StartXrayRequest | undefined, report: () => void): void {
+  useRustCore(current: () => RustCore, start: StartXrayRequest | undefined, report: () => void, startProbe?: StartServiceProbe): void {
     this.localApi.useRustCore(current, start, report);
-    this.serviceRoutes.useRustCore(current, start, report);
+    this.serviceRoutes.useRustCore(current, start, report, startProbe);
   }
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
