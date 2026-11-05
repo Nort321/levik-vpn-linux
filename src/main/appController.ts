@@ -1,3 +1,4 @@
+import { CoreTunnelHealth, type TunnelHealthOptions } from "./core/nativeTunnelHealth";
 import { CoreServerPinger } from "./core/nativeServerPinger";
 import type { CreateApiDiscovery } from "./core/nativeApiDiscovery";
 import { corePublicFetch, type NativePublicClient } from "./core/publicFetch";
@@ -245,8 +246,8 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       if (!current()) await this.xray.stop();
     },
     allowTunnel: () => this.killSwitch.allowTunnel(),
-    healthy: () => this.xray.isHealthy().then(async (running) => running && await isTunnelHealthy()),
-    stop: () => this.xray.stop(),
+    healthy: () => this.xray.isHealthy().then(async (running) => running && await this.checkTunnelHealth()),
+    stop: () => { this.tunnelProbe.cancel(); return this.xray.stop(); },
     releaseProtection: async () => { await this.releaseProtection(); },
     changed: (guest, detail) => {
       this.patch({ guest, status: !guest ? "disconnected" : guest.phase === "connecting" ? "connecting" : guest.phase === "connected" ? "connected" : "error",
@@ -268,6 +269,8 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   private identity!: DeviceIdentity;
   private api!: MobileApiClient;
   private createApiDiscovery: CreateApiDiscovery | undefined;
+  private readonly tunnelProbe = new CoreTunnelHealth(() => this.core, "linux",
+    () => this.recordDiagnostic("Rust-ядро: проверка трафика через туннель не завершена"));
   private pingGeneration = 0;
   private readonly serverPinger = new CoreServerPinger(() => this.core,
     () => this.recordDiagnostic("Rust-ядро: замер доступности серверов не завершён"));
@@ -820,7 +823,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       await this.startXray(config, generation);
       this.recordNetwork();
       progress.reach("verify", "timeout");
-      const healthy = this.xray.serviceRoutes?.authentication ? await this.xray.isHealthy() : await isTunnelHealthy({ onFailure: (codes) => progress.reach("verify", codes[0] ?? "other") });
+      const healthy = this.xray.serviceRoutes?.authentication ? await this.xray.isHealthy() : await this.checkTunnelHealth({ onFailure: (codes) => progress.reach("verify", codes[0] ?? "other") });
       verifyFailed = !healthy;
       if (!healthy) throw new Error("VPN-сервер не передаёт трафик. Выберите другой сервер или повторите подключение.");
       this.assertCurrentConnection(generation);
@@ -904,6 +907,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   }
 
   private stopNormalConnection(by: EndBy, code: string | null): Promise<void> {
+    this.tunnelProbe.cancel();
     this.cancelRouteProbes();
     void this.telemetry.finish(by, code);
     this.cancelTunnelRecovery();
@@ -972,6 +976,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   async shutdown(reason: "quit" | "app_update" = "quit"): Promise<void> {
     this.pingGeneration++;
     this.serverPinger.cancel();
+    this.tunnelProbe.cancel();
     if (this.guestConnection.active) await this.disconnectGuest(false);
     this.cancelRouteProbes();
     if (this.serviceRoutesRetry) clearTimeout(this.serviceRoutesRetry);
@@ -2318,7 +2323,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
           await this.startXray(this.lastConfig, generation);
           this.recordNetwork();
           progress?.reach("verify", "timeout");
-          const healthy = this.xray.serviceRoutes?.authentication ? await this.xray.isHealthy() : await isTunnelHealthy({ onFailure: (codes) => progress?.reach("verify", codes[0] ?? "other") });
+          const healthy = this.xray.serviceRoutes?.authentication ? await this.xray.isHealthy() : await this.checkTunnelHealth({ onFailure: (codes) => progress?.reach("verify", codes[0] ?? "other") });
           if (!healthy) throw new Error("VPN-сервер не передаёт трафик");
           this.assertCurrentConnection(generation);
           this.reconnectAttempts = 0;
@@ -2346,7 +2351,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.tunnelHealthCheckRunning = true;
     try {
       let codes = ["no_vpn_network"];
-      const healthy = await this.xray.isHealthy() && (this.xray.serviceRoutes?.authentication || await isTunnelHealthy({ onFailure: (failures) => { codes = failures; } }));
+      const healthy = await this.xray.isHealthy() && (this.xray.serviceRoutes?.authentication || await this.checkTunnelHealth({ onFailure: (failures) => { codes = failures; } }));
       if (generation !== this.connectionGeneration || this.state.status !== "connected") return;
       this.tunnelHealthFailures = healthy ? 0 : this.tunnelHealthFailures + 1;
       this.telemetry.record((session) => {
@@ -2459,6 +2464,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   private async stopTunnelForReplacement(): Promise<void> {
     if (this.guestConnection.active) return;
+    this.tunnelProbe.cancel();
     this.cancelRouteProbes();
     this.cancelTunnelRecovery();
     this.nextAttemptCause = "server_switch";
@@ -2508,6 +2514,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   useRustCore(status: LevikCoreStatus): void {
     this.createApiDiscovery = status.state === "loaded" ? status.module.createApiDiscovery : undefined;
     this.serverPinger.useRustCore(status.state === "loaded" ? status.module.startServerPings : undefined);
+    this.tunnelProbe.useRustCore(status.state === "loaded" ? status.module.startTunnelProbe : undefined);
     const version = status.state === "loaded" ? status.info.version : null;
     this.core = new RustCore(coreBridge(status), (line) => this.recordDiagnostic(line), "ts", version);
     this.telemetry.useCore(() => this.core.tally());
@@ -2528,6 +2535,13 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.publicHttp = null;
     try { this.publicHttp = status.state === "loaded" ? status.module.createPublicClient?.() ?? null : null; }
     catch { this.recordDiagnostic("Rust-ядро: служебный HTTP-клиент недоступен"); }
+  }
+
+  private checkTunnelHealth(options: TunnelHealthOptions = {}): Promise<boolean> {
+    return this.tunnelProbe.check(options, isTunnelHealthy);
+  }
+  private measureTunnelTraffic(current: () => boolean): Promise<number | null> {
+    return this.tunnelProbe.traffic(current, measureTraffic);
   }
 
   private applyCoreMode(): void {
@@ -3012,7 +3026,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     void (async () => {
       await delay(delayMs);
       if (!current()) return;
-      const elapsed = await measureTraffic(current);
+      const elapsed = await this.measureTunnelTraffic(current);
       const passed = elapsed !== null;
       if (!current()) return;
       const network = this.currentNetworkKey();
@@ -3026,7 +3040,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       }
       // No handshake either: the tunnel is down, which the health check handles.
       // A handshake without a download is a throttled protocol.
-      if (!await isTunnelHealthy() || !current()) return;
+      if (!await this.checkTunnelHealth() || !current()) return;
       if (checkedNode) this.telemetry.record((session) => session.trafficCheck(checkedNode, FAILED_TRAFFIC_CHECK_MS, false));
       if (network) {
         const node = nodeIdForServer(server) ?? server.id;
