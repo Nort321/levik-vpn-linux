@@ -16,9 +16,7 @@
     "test": "vitest run && python3 -m unittest discover -s tests -p \"test_*.py\"",
     "download:xray": "node scripts/download-xray.mjs",
     "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
-    "check": "npm run lint && npm run build && npm test",
-    "fetch:levik-core": "node scripts/fetch-levik-core.mjs linux-x64",
-    "download:levik-core": "node scripts/download-levik-core.mjs"
+    "check": "npm run lint && npm run build && npm test"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.5",
@@ -66,13 +64,6 @@
         "filter": [
           "levik-network.py",
           "xray-integrity.json"
-        ]
-      },
-      {
-        "from": "vendor/levik-core/linux-x64",
-        "to": "levik-core",
-        "filter": [
-          "levik_core.node"
         ]
       }
     ],

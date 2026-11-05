@@ -1,7 +1,3 @@
-import type { OpenRouteProbe } from "../core/nativeRouteProbes";
-import type { StartServiceProbe } from "../core/nativeServiceProbes";
-import { CoreXrayApi, type StartXrayRequest } from "../core/nativeXrayApi";
-import type { RustCore } from "../core/rustCore";
 import { guestInterface } from "./guestSession";
 import { ServiceRouteSession } from "./serviceRouteSession";
 import type { ServiceRouteStatus } from "./serviceRoutes";
@@ -15,17 +11,11 @@ import { networkHelper } from "../linux/networkHelper";
 
 export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code: number | null, expected: boolean]; stats: [downloadBytes: number, uploadBytes: number]; serviceRoutes: [status: ServiceRouteStatus] }> {
   readonly serviceRoutes = new ServiceRouteSession((status) => this.emit("serviceRoutes", status));
-  private readonly localApi = new CoreXrayApi();
-  useRustCore(current: () => RustCore, start: StartXrayRequest | undefined, report: () => void, startProbe?: StartServiceProbe, openProbe?: OpenRouteProbe): void {
-    this.localApi.useRustCore(current, start, report);
-    this.serviceRoutes.useRustCore(current, start, report, startProbe, openProbe);
-  }
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
   private outboundName: string | null = null;
-  /** Binds the configuration to the physical adapter; the controller passes the core's. */
-  constructor(private readonly bind: typeof bindXrayOutboundInterface = bindXrayOutboundInterface) {
+  constructor() {
     super();
     networkHelper.on("exit", (code) => this.exited(code));
     networkHelper.on("lost", () => this.exited(null));
@@ -34,7 +24,7 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     await this.stop();
     const interfaceName = guestHost ? guestInterface(guestHost) : await findLinuxOutboundInterface();
     this.outboundName = interfaceName;
-    await networkHelper.request("start", { config: this.bind(config, interfaceName) });
+    await networkHelper.request("start", { config: bindXrayOutboundInterface(config, interfaceName) });
     this.running = true;
     try { await this.serviceRoutes.start(config); }
     catch (error) { await this.stop(); throw error; }
@@ -46,7 +36,6 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     return app.isPackaged ? join(process.resourcesPath, "xray", "xray") : join(app.getAppPath(), "vendor", "xray", "linux-x64", "xray");
   }
   async stop(): Promise<void> {
-    this.localApi.cancel();
     this.serviceRoutes.stop();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
@@ -65,14 +54,11 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
         const healthy = this.serviceRoutes.active || await this.serviceRoutes.probeCurrent();
         return this.running && healthy;
       }
-      await this.localApi.statistics(undefined, async () => {
-        await networkHelper.request("stats"); return { uplink: 0, downlink: 0, initialized: false };
-      }); return this.running;
+      await networkHelper.request("stats"); return this.running;
     }
     catch { return false; }
   }
   private exited(code: number | null): void {
-    this.localApi.cancel();
     if (!this.running) return;
     this.serviceRoutes.stop();
     this.running = false;
@@ -89,11 +75,9 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
         if (this.running) this.emit("stats", stats.downlink, stats.uplink);
         return;
       }
-      const stats = await this.localApi.statistics(undefined, async () => {
-        const result = await networkHelper.request("stats");
-        if (typeof result !== "string") throw new Error("Invalid core statistics");
-        return { ...parseXrayStats(result), initialized: false };
-      });
+      const result = await networkHelper.request("stats");
+      if (typeof result !== "string") throw new Error("Invalid core statistics");
+      const stats = parseXrayStats(result);
       if (this.running) this.emit("stats", stats.downlink, stats.uplink);
     } catch { /* Health monitor handles core failures without noisy repeated logs. */ }
     finally { this.polling = false; }

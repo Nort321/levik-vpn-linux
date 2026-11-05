@@ -14,7 +14,3 @@ __pycache__/
 *.pyc
 *.orig
 *.rej
-
-# Public TEST ONLY loopback TLS fixtures; never production identities.
-!tests/fixtures/health-test-cert.pem
-!tests/fixtures/health-test-key.pem

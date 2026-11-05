@@ -33,7 +33,6 @@ export function buildXrayConfig(
   profile: PreparedTunnelProfile,
   server: TunnelServer,
   settings: AppSettings,
-  servicePassword?: string,
 ): Record<string, unknown> {
   const selectedOutbound = withEndpointResolution(withAntiDpi(server, settings));
   const bootstrapDomains = endpointDomains(server.outbound);
@@ -107,7 +106,7 @@ export function buildXrayConfig(
     routing: { domainStrategy: "IPIfNonMatch", domainMatcher: "hybrid", rules },
     policy: { system: { statsInboundDownlink: true, statsInboundUplink: true, statsOutboundDownlink: true, statsOutboundUplink: true } },
     stats: {},
-  }, { policy: profile.serviceRoutes, selected: server, servers: profile.servers, servicePassword,
+  }, { policy: profile.serviceRoutes, selected: server, servers: profile.servers,
     automaticServer: settings.automaticServer,
     ...(settings.splitTunnelMode === "only" ? { onlyProcesses: processes, insertionIndex: includedAppRule ? rules.indexOf(includedAppRule) : rules.length } : {}), directTag: "direct",
     prepareOutbound: (candidate) => withEndpointResolution(withAntiDpi(candidate, settings)) });
