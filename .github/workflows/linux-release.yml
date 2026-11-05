@@ -30,8 +30,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p core-input/linux-x64
-          gh api "repos/$GITHUB_REPOSITORY/releases/assets/713186463" -H "Accept: application/octet-stream" > core-input/linux-x64/levik_core.node
-          printf '%s\n' 'a9e5a4be567e9a45a486ddcd84c91a3073e91cc70bd2ec4e14563b8db1fa1f35  core-input/linux-x64/levik_core.node' | sha256sum --check
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/713239307" -H "Accept: application/octet-stream" > core-input/linux-x64/levik_core.node
+          printf '%s\n' '69d549d216fe04cf59f6de57a1a7dbe8a4c80147d57d5ed157ebc1fbb6ae377e  core-input/linux-x64/levik_core.node' | sha256sum --check
       - uses: actions/upload-artifact@v4
         with:
           name: levik-core-pinned
@@ -92,7 +92,7 @@ jobs:
         if: needs.core.result == 'success'
         run: |
           set -euo pipefail
-          ELECTRON_RUN_AS_NODE=1 release/linux-unpacked/levik-vpn scripts/smoke-bundled-core.cjs release/linux-unpacked/resources/levik-core/levik_core.node "0.18.0"
+          ELECTRON_RUN_AS_NODE=1 release/linux-unpacked/levik-vpn scripts/smoke-bundled-core.cjs release/linux-unpacked/resources/levik-core/levik_core.node "0.19.0"
       - name: Inspect packages and checksum release artifacts
         env:
           VERSION: ${{ steps.version.outputs.version }}
