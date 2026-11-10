@@ -13,10 +13,12 @@ import re
 import selectors
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import time
+import uuid
 
 TUN = "LevikVPN"
 TABLE = "levik_vpn"
@@ -24,6 +26,7 @@ DNS_TABLE = "levik_dns"
 STATE = Path("/run/levik-vpn")
 CORE = Path("/var/lib/levik-vpn/core")
 ACCOUNT = "levik-vpn-core"
+TRUSTTUNNEL_SHA256 = "b0ffa6dd6ee9f04bf53070a6cd07294748180417de1fc3b3d50f519fcfd9bc36"
 SAFE_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C"}
 # setpriv restores PDEATHSIG after changing credentials. Check the parent again
 # after that transition to close the interval during which Linux clears it.
@@ -188,10 +191,57 @@ def install_core(source):
     return account
 
 
+def install_trust_tunnel(source):
+    destination = CORE / "trusttunnel"
+    if source is None or not source.is_file():
+        return False
+    with source.open("rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError("Invalid TrustTunnel resource")
+        data = handle.read(100_000_001)
+    if len(data) > 100_000_000 or hashlib.sha256(data).hexdigest() != TRUSTTUNNEL_SHA256:
+        return False
+    if destination.is_file() and hashlib.sha256(destination.read_bytes()).hexdigest() == TRUSTTUNNEL_SHA256:
+        return True
+    temporary = destination.with_suffix(".new")
+    temporary.write_bytes(data)
+    temporary.chmod(0o755)
+    temporary.replace(destination)
+    return True
+
+
+def trust_tunnel_config(endpoint, interface, port, user_id):
+    if not isinstance(endpoint, dict) or set(endpoint) != {"address", "port", "username", "password", "serverName", "quic"}:
+        raise ValueError("Invalid TrustTunnel profile")
+    if not isinstance(endpoint["address"], str) or not isinstance(ipaddress.ip_address(endpoint["address"]), ipaddress.IPv4Address):
+        raise ValueError("Invalid TrustTunnel address")
+    if type(endpoint["port"]) is not int or not 1 <= endpoint["port"] <= 65535 or type(endpoint["quic"]) is not bool:
+        raise ValueError("Invalid TrustTunnel transport")
+    for name, pattern in (("username", r"[a-f0-9]{32}"), ("password", r"[A-Za-z0-9_-]{43}"),
+                          ("serverName", r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")):
+        if not isinstance(endpoint[name], str) or not re.fullmatch(pattern, endpoint[name]):
+            raise ValueError("Invalid TrustTunnel profile")
+    if not isinstance(interface, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface) or interface in ("lo", TUN):
+        raise ValueError("Invalid TrustTunnel network interface")
+    tls = {"enabled": True, "server_name": endpoint["serverName"]}
+    if not endpoint["quic"]:
+        tls["utls"] = {"enabled": True, "fingerprint": "chrome"}
+    return {
+        "log": {"disabled": True},
+        "inbounds": [{"type": "vless", "listen": "127.0.0.1", "listen_port": port, "users": [{"uuid": user_id}]}],
+        "outbounds": [{"type": "trusttunnel", "tag": "trusttunnel", "server": endpoint["address"], "server_port": endpoint["port"],
+                       "username": endpoint["username"], "password": endpoint["password"], "quic": endpoint["quic"],
+                       "bind_interface": interface, "tls": tls}],
+        "route": {"final": "trusttunnel"},
+    }
+
+
 class Network:
-    def __init__(self, account):
+    def __init__(self, account, trust_tunnel_ready=False):
         self.account = account
         self.core = None
+        self.sidecar = None
+        self.trust_tunnel_ready = trust_tunnel_ready
         self.dns_enabled = nft_exists(DNS_TABLE)
         try:
             saved = json.loads((STATE / "state.json").read_text())
@@ -271,10 +321,66 @@ class Network:
                     self.core.wait(timeout=5)
                 self.core = None
                 (STATE / "core.json").unlink(missing_ok=True)
+            if self.sidecar:
+                self.sidecar.terminate()
+                try:
+                    self.sidecar.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.sidecar.kill()
+                    self.sidecar.wait(timeout=3)
+                self.sidecar = None
 
-    def start(self, config):
+    def start(self, config, trust_tunnel=None):
         address = validate_config(config)
         self.stop()
+        if trust_tunnel is None:
+            self.start_core(config, address)
+            return
+        try:
+            self.start_trust_tunnel(config, trust_tunnel)
+            self.start_core(config, address)
+        except Exception:
+            self.stop()
+            raise
+
+    def start_trust_tunnel(self, config, endpoint):
+        if not self.trust_tunnel_ready:
+            raise ValueError("TrustTunnel component missing; reinstall Levik VPN")
+        first = config["outbounds"][0]
+        expected = {"vnext": [{"address": "127.0.0.1", "port": 1, "users": [
+            {"id": "00000000-0000-4000-8000-000000000000", "encryption": "none"},
+        ]}]}
+        if first.get("protocol") != "vless" or first.get("settings") != expected:
+            raise ValueError("Invalid TrustTunnel local outbound")
+        tun = next(item for item in config["inbounds"] if item["protocol"] == "tun")
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        user_id = str(uuid.uuid4())
+        local = trust_tunnel_config(endpoint, tun["settings"].get("autoOutboundsInterface"), port, user_id)
+        account = self.account
+        command = ["setpriv", f"--reuid={account.pw_uid}", f"--regid={account.pw_gid}", "--clear-groups",
+                   "--pdeathsig=SIGKILL", "--no-new-privs", "--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all",
+                   sys.executable, "-I", "-c", CORE_EXEC, str(os.getpid()), str(CORE / "trusttunnel"),
+                   "run", "-c", "stdin", "--disable-color"]
+        self.sidecar = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       env=SAFE_ENV, preexec_fn=partial(parent_death_signal, os.getpid()))
+        self.sidecar.stdin.write(json.dumps(local).encode())
+        self.sidecar.stdin.close()
+        for _ in range(60):
+            if self.sidecar.poll() is not None:
+                break
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    first["settings"]["vnext"][0]["port"] = port
+                    first["settings"]["vnext"][0]["users"][0]["id"] = user_id
+                    first["streamSettings"] = {"sockopt": {"interface": "lo"}}
+                    return
+            except OSError:
+                time.sleep(0.1)
+        raise ValueError("TrustTunnel failed to start")
+
+    def start_core(self, config, address):
         account = self.account
         # Only the pinned core gets network capabilities, never Electron or a
         # user-selected binary. setpriv drops root and all supplementary groups.
@@ -318,7 +424,7 @@ class Network:
 
     def command(self, message):
         command = message.get("command")
-        if command == "start": self.start(message.get("config"))
+        if command == "start": self.start(message.get("config"), message.get("trustTunnel"))
         elif command == "stop": self.stop()
         elif command == "stats":
             if not self.core or self.core.poll() is not None:
@@ -348,7 +454,9 @@ def main():
         except BlockingIOError:
             raise ValueError("Another Levik VPN window already controls the network") from None
         recover_core()
-        network = Network(install_core(Path(sys.argv[1])))
+        account = install_core(Path(sys.argv[1]))
+        ready = install_trust_tunnel(Path(sys.argv[2]) if len(sys.argv) > 2 else None)
+        network = Network(account, ready)
     except Exception as error:
         # Tell the GUI why startup failed; stderr is never forwarded.
         detail = str(error) if isinstance(error, ValueError) else "Network helper failed to start; check required Linux packages and permissions"
@@ -364,7 +472,7 @@ def main():
     buffer = b""
     try:
         while True:
-            if network.core and network.core.poll() is not None:
+            if network.core and (network.core.poll() is not None or network.sidecar and network.sidecar.poll() is not None):
                 code = network.core.returncode
                 network.stop()
                 print(json.dumps({"event": "exit", "code": code}), flush=True)

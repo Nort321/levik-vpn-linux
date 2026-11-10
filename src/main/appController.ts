@@ -269,6 +269,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   private loginGeneration = 0;
   private reconnectAttempts = 0;
   private lastConfig: Record<string, unknown> | null = null;
+  private lastTrustTunnel: TunnelServer["trustTunnel"];
   private connectionGeneration = 0;
   private tunnelOperation: Promise<void> = Promise.resolve();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -534,7 +535,10 @@ export class AppController extends EventEmitter<AppControllerEvents> {
   snapshot(): AppSnapshot {
     const snapshot = structuredClone(this.state);
     // Renderer only needs the protocol label, never server credentials.
-    snapshot.servers = snapshot.servers.map((server) => ({ ...server, outbound: { protocol: server.outbound.protocol } }));
+    for (const server of snapshot.servers) {
+      delete server.trustTunnel;
+      server.outbound = { protocol: server.outbound.protocol };
+    }
     return snapshot;
   }
 
@@ -757,6 +761,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.cancelRouteProbes();
     this.cancelTunnelRecovery();
     this.lastConfig = null;
+    this.lastTrustTunnel = undefined;
 
     this.trafficCheck = null;
     this.resetTrafficStats();
@@ -767,6 +772,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     if (!this.guestConnection.active) return;
     await this.guestConnection.disconnect();
     this.lastConfig = null;
+    this.lastTrustTunnel = undefined;
 
     this.resetTrafficStats();
     if (restoreServices && this.accessToken) this.refreshHomeRoadSoon();
@@ -832,6 +838,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       await this.refreshServiceRoutePolicy(server);
       const config = buildXrayConfig(this.serviceProfileFor(server), server, this.state.settings);
       this.lastConfig = config;
+      this.lastTrustTunnel = server.trustTunnel;
       progress.reach("core", "core_start_failed");
       await this.startXray(config, generation);
       this.recordNetwork();
@@ -851,6 +858,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
       this.recordConnected();
     } catch (error) {
       this.lastConfig = null;
+      this.lastTrustTunnel = undefined;
       let failure: unknown = error;
       let next: TunnelServer | null = null;
       try {
@@ -924,6 +932,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     void this.telemetry.finish(by, code);
     this.cancelTunnelRecovery();
     this.lastConfig = null;
+    this.lastTrustTunnel = undefined;
     this.patch({ status: "disconnecting", statusDetail: "Отключение…" });
     return this.runTunnelOperation(async () => {
       try {
@@ -2223,6 +2232,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.lastServiceRouteReport = null;
     this.patch({ serviceRoutes: null, serviceRouteNotice: null, serviceRouteDetails: [] });
     this.lastConfig = null;
+    this.lastTrustTunnel = undefined;
     this.settingsRevision = 0;
     this.pendingSync = {};
     // The next account's list takes over; favourites starred here join it as edits.
@@ -2312,6 +2322,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
               this.patch({ selectedServerId: server.id });
               await this.secureStore.put("selected_server", Buffer.from(server.id));
               this.lastConfig = buildXrayConfig(this.profile, server, this.state.settings);
+              this.lastTrustTunnel = server.trustTunnel;
             }
           }
           this.assertCurrentConnection(generation);
@@ -2418,7 +2429,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   private async startXray(config: Record<string, unknown>, generation: number): Promise<void> {
     this.assertCurrentConnection(generation);
-    await this.xray.start(config);
+    await this.xray.start(config, undefined, this.lastTrustTunnel);
     try {
       this.assertCurrentConnection(generation);
       await this.killSwitch.allowTunnel();
@@ -2472,6 +2483,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
     this.patch({ status: "reconnecting", statusDetail: "Применение изменений соединения…" });
     await this.runTunnelOperation(() => this.xray.stop());
     this.lastConfig = null;
+    this.lastTrustTunnel = undefined;
   }
 
   private connectionRequested(): boolean {
@@ -2726,6 +2738,7 @@ export class AppController extends EventEmitter<AppControllerEvents> {
 
   /** Servers the automatic choice may take. */
   private automaticCandidates(servers: TunnelServer[]): TunnelServer[] {
+    servers = servers.filter((server) => !server.trustTunnel);
     // A home exit («🏠») is only ever the user's own choice.
     const ordinary = servers.filter((item) => !isHomeRoadServer(item.name));
     const pool = ordinary.length ? ordinary : servers;

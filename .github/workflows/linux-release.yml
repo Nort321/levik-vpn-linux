@@ -39,6 +39,7 @@ jobs:
           npm version --no-git-tag-version "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - run: npm run download:xray
+      - run: npm run download:trusttunnel
       - run: npm run lint
       - run: npm run build
       - name: Verify live Xray flow continuity and automatic controls

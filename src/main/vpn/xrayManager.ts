@@ -8,6 +8,7 @@ import { parseXrayStats } from "./xrayStats";
 import { bindXrayOutboundInterface } from "./xrayConfig";
 import { findLinuxOutboundInterface } from "../linux/outboundInterface";
 import { networkHelper } from "../linux/networkHelper";
+import type { TrustTunnelEndpoint } from "../../shared/contracts";
 
 export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code: number | null, expected: boolean]; stats: [downloadBytes: number, uploadBytes: number]; serviceRoutes: [status: ServiceRouteStatus] }> {
   readonly serviceRoutes = new ServiceRouteSession((status) => this.emit("serviceRoutes", status));
@@ -20,11 +21,14 @@ export class XrayManager extends EventEmitter<{ log: [line: string]; exit: [code
     networkHelper.on("exit", (code) => this.exited(code));
     networkHelper.on("lost", () => this.exited(null));
   }
-  async start(config: Record<string, unknown>, guestHost?: string): Promise<void> {
+  async start(config: Record<string, unknown>, guestHost?: string, trustTunnel?: TrustTunnelEndpoint): Promise<void> {
     await this.stop();
     const interfaceName = guestHost ? guestInterface(guestHost) : await findLinuxOutboundInterface();
     this.outboundName = interfaceName;
-    await networkHelper.request("start", { config: bindXrayOutboundInterface(config, interfaceName) });
+    await networkHelper.request("start", {
+      config: bindXrayOutboundInterface(config, interfaceName),
+      ...(trustTunnel ? { trustTunnel } : {}),
+    });
     this.running = true;
     try { await this.serviceRoutes.start(config); }
     catch (error) { await this.stop(); throw error; }

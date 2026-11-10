@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countryServers, groupByCountry, serverLabel } from "../src/shared/serverGroups";
+import { countryServers, groupByCountry, serverLabel, serverProtocolShortLabel } from "../src/shared/serverGroups";
 import type { TunnelServer } from "../src/shared/contracts";
 
 function server(id: string, name: string, host: string, protocol = "vless", countryCode = "DE"): TunnelServer {
@@ -41,6 +41,18 @@ describe("server list by country", () => {
       server("d", "🇩🇪 Германия · Франкфурт", "d.example.net"),
     ]);
     expect(countries[0]!.nodes.map((node) => node.label)).toEqual(["Сервер 1", "Сервер 2", "Франкфурт", "Франкфурт 2"]);
+  });
+
+  it("offers both TrustTunnel modes as choices on the same server", () => {
+    const host = "203.0.113.1";
+    const name = "🇩🇪 Германия · Франкфурт";
+    const groups = groupByCountry([
+      server("vless", name, host),
+      { ...server("h3", name, host), outbound: { protocol: "trusttunnel-h3", settings: { address: host, port: 4443 } } },
+      { ...server("h2", name, host), outbound: { protocol: "trusttunnel-h2", settings: { address: host, port: 4443 } } },
+    ]);
+    expect(groups[0]!.nodes).toHaveLength(1);
+    expect(groups[0]!.nodes[0]!.variants.map(serverProtocolShortLabel)).toEqual(["VLESS", "TrustTunnel H2", "TrustTunnel H3"]);
   });
 
   it("keeps home exits, unknown countries and other protocols on cards of their own", () => {

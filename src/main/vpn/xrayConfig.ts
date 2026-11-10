@@ -34,7 +34,10 @@ export function buildXrayConfig(
   server: TunnelServer,
   settings: AppSettings,
 ): Record<string, unknown> {
-  const selectedOutbound = withEndpointResolution(withAntiDpi(server, settings));
+  const selectedOutbound = server.trustTunnel ? {
+    tag: server.tag, protocol: "vless",
+    settings: { vnext: [{ address: "127.0.0.1", port: 1, users: [{ id: "00000000-0000-4000-8000-000000000000", encryption: "none" }] }] },
+  } : withEndpointResolution(withAntiDpi(server, settings));
   const bootstrapDomains = endpointDomains(server.outbound);
   const directDomains = [...profile.directDomains];
   const proxyDomains = [...profile.proxyDomains];

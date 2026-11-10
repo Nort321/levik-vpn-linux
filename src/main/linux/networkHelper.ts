@@ -34,14 +34,16 @@ export class NetworkHelper extends EventEmitter<{ exit: [code: number | null]; l
   private async launch(): Promise<ChildProcessWithoutNullStreams> {
     let helper = app.isPackaged ? join(process.resourcesPath, "linux", "levik-network.py") : join(app.getAppPath(), "native", "levik-network.py");
     let assets = app.isPackaged ? join(process.resourcesPath, "xray") : join(app.getAppPath(), "vendor", "xray", "linux-x64");
+    let trustTunnel = app.isPackaged ? join(process.resourcesPath, "trusttunnel", "sing-box")
+      : join(app.getAppPath(), "vendor", "trusttunnel", "linux-x64", "sing-box");
     let cleanup: (() => Promise<void>) | null = null;
     if (app.isPackaged && process.env.APPIMAGE) {
-      try { ({ helper, assets, cleanup } = await stageHelper(process.resourcesPath)); }
+      try { ({ helper, assets, trustTunnel, cleanup } = await stageHelper(process.resourcesPath)); }
       catch { throw new Error("Не удалось подготовить сетевой помощник: проверьте свободное место во временной папке"); }
     }
     const removeStaged = () => { const pending = cleanup; cleanup = null; void pending?.().catch(() => undefined); };
     // pkexec grants authority only to the helper; Electron never runs as root.
-    const child = spawn("pkexec", ["/usr/bin/python3", "-I", helper, assets], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("pkexec", ["/usr/bin/python3", "-I", helper, assets, trustTunnel], { stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
     let startupError: string | null = null;
     child.stderr.resume(); // Never forward privileged process output or profiles to UI logs.
