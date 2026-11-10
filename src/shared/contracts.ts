@@ -96,6 +96,7 @@ export interface TunnelServer {
   countryCode: string;
   outbound: Record<string, unknown>;
   trustTunnel?: TrustTunnelEndpoint;
+  groupWithVless?: { host: string; port: number };
 }
 
 export interface AppSettings {
