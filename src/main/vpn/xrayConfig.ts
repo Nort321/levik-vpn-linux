@@ -1,3 +1,4 @@
+import { EXTERNAL_AUTO_ID } from "../../shared/externalPool";
 import { withServiceRoutes } from "./serviceRoutes";
 import { isIP } from "node:net";
 import type { AppSettings, TunnelServer } from "../../shared/contracts";
@@ -34,6 +35,8 @@ export function buildXrayConfig(
   server: TunnelServer,
   settings: AppSettings,
 ): Record<string, unknown> {
+  if (server.id === EXTERNAL_AUTO_ID) throw new Error("Сначала проверьте безлимитные серверы");
+  profile = { ...profile, servers: profile.servers.filter((item) => item.id !== EXTERNAL_AUTO_ID) };
   const selectedOutbound = server.trustTunnel ? {
     tag: server.tag, protocol: "vless",
     settings: { vnext: [{ address: "127.0.0.1", port: 1, users: [{ id: "00000000-0000-4000-8000-000000000000", encryption: "none" }] }] },
